@@ -64,7 +64,7 @@ function photonPlace(feature) {
   const town = p.city || p.town || p.village || p.county;
   const detail = [p.name && street !== p.name ? street : null, p.district, town]
     .filter((part, i, all) => part && part !== name && all.indexOf(part) === i);
-  return { name, detail: detail.join(', '), lat, lon, kind: 'address', source: 'photon' };
+  return { name, detail: detail.join(', '), lat, lon, kind: 'address', source: 'photon', isAddress: !p.name };
 }
 
 async function searchPhoton(text, near, signal) {
@@ -85,6 +85,9 @@ async function searchPhoton(text, near, signal) {
       && Math.abs(other.lat - place.lat) < 0.003 && Math.abs(other.lon - place.lon) < 0.004);
     if (!repeated) places.push(place);
   }
+  // Si el texto lleva número («Gran Vía 32») se busca un portal: van primero
+  // las direcciones y después los comercios que hay en ellas.
+  if (/\d/.test(text)) places.sort((a, b) => Number(b.isAddress) - Number(a.isAddress));
   return places.slice(0, GEOCODER.limit);
 }
 

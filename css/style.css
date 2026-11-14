@@ -679,6 +679,7 @@ ul, ol.route-list, ol.steps { list-style: none; margin: 0; padding: 0; }
   font-weight: 700;
   white-space: nowrap;
 }
+.route-tag.warn { background: #fff0d6; color: #8a5200; }
 .route-legs { display: flex; flex-wrap: wrap; align-items: center; gap: 4px 5px; }
 .leg-sep { color: #9db3ca; font-weight: 700; }
 .leg-lines { display: inline-flex; align-items: center; gap: 3px; }

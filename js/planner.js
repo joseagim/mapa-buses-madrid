@@ -31,6 +31,7 @@ function madridNow() {
 }
 
 const WHEN_RE = /^(\d{4}-\d{2}-\d{2})T(\d{2}):(\d{2})$/;
+const LONG_WAIT_S = 30 * 60; // a partir de aquí una espera se avisa como «larga»
 
 export function initPlanner(ctx) {
   const { map, data } = ctx;
@@ -400,16 +401,20 @@ export function initPlanner(ctx) {
     if (!st.options.length) return;
 
     const tags = tagsFor(st.options);
+    const longWait = (option) => option.legs.some((leg) => leg.type === 'ride' && leg.wait >= LONG_WAIT_S);
+    if (st.options[0].kind === 'bus' && longWait(st.options[0])) {
+      resultsBox.append(h('p', { class: 'notice', text: 'A esa hora hay poco servicio: la mejor ruta tiene esperas largas. Mira a qué hora sale cada autobús.' }));
+    }
     const list = h('ol', { class: 'route-list' });
     st.options.forEach((option, index) => {
       const on = index === st.selected;
-      const tag = option.kind === 'walk' ? 'A pie' : tags.get(option);
+      const tag = option.kind === 'walk' ? 'A pie' : longWait(option) ? 'Espera larga' : tags.get(option);
       list.append(h('li', { class: `route${on ? ' on' : ''}` },
         h('button', { type: 'button', class: 'route-head', 'aria-expanded': String(on), onclick: () => select(index) },
           h('span', { class: 'route-top' },
             h('strong', { class: 'route-time', text: formatMinutes(option.duration) }),
             h('span', { class: 'route-clock', text: `${formatClock(option.depart)} → ${formatClock(option.arrive)}` }),
-            tag ? h('span', { class: 'route-tag', text: tag }) : null,
+            tag ? h('span', { class: `route-tag${tag === 'Espera larga' ? ' warn' : ''}`, text: tag }) : null,
           ),
           h('span', { class: 'route-legs' }, legChips(option)),
           h('span', { class: 'route-sub', text: subtitle(option) }),

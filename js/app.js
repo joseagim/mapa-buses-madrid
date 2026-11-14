@@ -209,6 +209,9 @@ async function selectionChanged({ reveal = null, fitAll = false } = {}) {
   renderSummary();
   updateUrl();
   modes.nearby?.onSelection();
+  // En el modo Ruta no se pintan las líneas: si se añade alguna (desde el
+  // popup de una parada), se pasa a Líneas para que se vea.
+  if (reveal && state.mode === 'route') setMode('lines');
   await syncMap();
   if (fitAll) fitToLines(state.selected.map((s) => s.id), false);
   else if (reveal) fitToLines(reveal, true);

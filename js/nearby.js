@@ -199,7 +199,8 @@ export function initNearby(ctx) {
   return {
     /** Un toque en el mapa mueve el punto. */
     onMapClick(latlng) {
-      setCenter(mapPlace(latlng.lat, latlng.lng), { fit: false });
+      // Si el mapa está muy alejado el círculo casi no se vería: se acerca.
+      setCenter(mapPlace(latlng.lat, latlng.lng), { fit: map.getZoom() < 15 });
       if (isMobile()) ctx.setPanelCollapsed(false);
       return true;
     },

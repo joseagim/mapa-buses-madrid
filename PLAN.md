@@ -34,11 +34,11 @@
 
 - [x] 1. Preprocesado: `build_data.py` genera `routing.json` (recorridos, franjas, calendario)
 - [x] 2. Motor de rutas `js/router.js` (RAPTOR + a pie + alternativas) con prueba en Node
-- [ ] 3. Interfaz en modos Líneas / Ruta / Cerca (reorganizar panel y `app.js`)
-- [ ] 4. Geocodificador `js/geocode.js` y selector de lugar (parada, dirección, punto del mapa)
-- [ ] 5. Modo Ruta: formulario, hora de salida, 3 rutas, dibujo en el mapa
-- [ ] 6. Modo Cerca: radio con deslizador, paradas, líneas y pintarlas
-- [ ] 7. Enlace compartible (modo y origen/destino en la URL) y créditos
+- [x] 3. Interfaz en modos Líneas / Ruta / Cerca (reorganizar panel y `app.js`)
+- [x] 4. Geocodificador `js/geocode.js` y selector de lugar (parada, dirección, punto del mapa)
+- [x] 5. Modo Ruta: formulario, hora de salida, 3 rutas, dibujo en el mapa
+- [x] 6. Modo Cerca: radio con deslizador, paradas, líneas y pintarlas
+- [x] 7. Enlace compartible (modo y origen/destino en la URL) y créditos
 - [ ] 8. Verificación en navegador (trayectos reales, móvil, v0.1) y correcciones
 - [ ] 9. Servidor local + resumen al usuario → esperar visto bueno
 - [ ] 10. (Tras el visto bueno) README, borrar PLAN.md, push a main, tag v0.2

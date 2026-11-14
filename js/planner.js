@@ -183,7 +183,7 @@ export function initPlanner(ctx) {
   }
 
   let ticket = 0;
-  async function compute({ fit = true } = {}) {
+  async function compute({ fit = true, select: wanted = 0 } = {}) {
     const mine = ++ticket;
     ctx.updateUrl();
     drawPins();
@@ -226,6 +226,7 @@ export function initPlanner(ctx) {
         transfers: 0, walkTime: result.walk.time, walkDist: result.walk.dist, waitTime: 0,
       });
     }
+    if (wanted > 0 && wanted < st.options.length) st.selected = wanted;
     assignColors();
     renderResults();
     ctx.renderSummary();
@@ -428,6 +429,7 @@ export function initPlanner(ctx) {
     st.selected = index;
     renderResults();
     ctx.renderSummary();
+    ctx.updateUrl();
     drawRoute(true);
   }
 
@@ -605,11 +607,15 @@ export function initPlanner(ctx) {
     },
 
     urlParams() {
-      return { o: encodePlace(st.from), d: encodePlace(st.to), h: st.when };
+      return { o: encodePlace(st.from), d: encodePlace(st.to), h: st.when, r: st.selected > 0 ? st.selected + 1 : null };
     },
 
     /** Aplica el estado de la URL. `keepView`: no mover el mapa (la URL trae su vista). */
     applyParams(params, keepView) {
+      // Si la URL describe lo que ya hay (p. ej. solo ha cambiado la vista del
+      // mapa), no se recalcula ni se pierde la ruta elegida.
+      const now = this.urlParams();
+      if (['o', 'd', 'h'].every((key) => (params[key] || null) === (now[key] || null)) && (st.from || st.to)) return;
       for (const [which, key] of [['from', 'o'], ['to', 'd']]) {
         const point = parsePoint(params[key]);
         st[which] = point
@@ -621,7 +627,7 @@ export function initPlanner(ctx) {
       whenSelect.value = st.when ? 'at' : 'now';
       whenInput.hidden = !st.when;
       if (st.when) whenInput.value = st.when;
-      compute({ fit: !keepView });
+      compute({ fit: !keepView, select: (Number(params.r) || 1) - 1 });
     },
   };
 }

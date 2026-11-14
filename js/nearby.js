@@ -233,6 +233,7 @@ export function initNearby(ctx) {
     },
 
     applyParams(params, keepView) {
+      if ((params.c || null) === this.urlParams().c) return; // nada nuevo
       const point = parsePoint(params.c);
       if (!point) {
         setCenter(null, { fit: false });

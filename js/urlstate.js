@@ -13,6 +13,7 @@
 //   t = modo: 'ruta' o 'cerca' (si falta, Líneas)
 //   o, d = origen y destino de la ruta: latitud,longitud,nombre
 //   h = hora de salida: AAAA-MM-DDTHH:MM (si falta, ahora)
+//   r = cuál de las rutas está elegida (si falta, la primera)
 //   c = centro de «paradas cercanas»: latitud,longitud,radio,nombre
 
 const DIRS = new Set(['b', 'i', 'v']);

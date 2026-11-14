@@ -93,8 +93,9 @@ async function reversePhoton(lat, lon, signal) {
   const feature = json.features?.[0];
   if (!feature) return null;
   const p = feature.properties;
+  // Para un punto del mapa orienta más la calle que el comercio más cercano.
   const street = [p.street, p.housenumber].filter(Boolean).join(' ');
-  return p.name && street && p.name !== street ? `${p.name} (${street})` : p.name || street || null;
+  return street || p.name || null;
 }
 
 // ---------------------------------------------------------------------------

@@ -2,7 +2,7 @@
 // lista de rutas y dibujo de la ruta elegida en el mapa.
 /* global L */
 
-import { NETWORK, PALETTE } from './config.js';
+import { NETWORKS, PALETTE } from './config.js';
 import { $, h, isMobile, toast, formatMinutes, formatMeters, formatClock } from './dom.js';
 import { textColorFor } from './geo.js';
 import { createPlaceInput, mapPlace } from './places.js';
@@ -166,12 +166,13 @@ export function initPlanner(ctx) {
   let graphPromise = null;
   function ensureGraph() {
     if (!graphPromise) {
-      graphPromise = fetch(`${NETWORK.path}/routing.json`)
-        .then((response) => {
-          if (!response.ok) throw new Error(`routing.json: HTTP ${response.status}`);
-          return response.json();
-        })
-        .then((routing) => buildGraph([{ id: NETWORK.id, stops: data.stops, routing }]));
+      // Un routing.json por red; el grafo las une (los transbordos a pie entre
+      // redes salen de las coordenadas de las paradas).
+      graphPromise = Promise.all(NETWORKS.map(async (net) => {
+        const response = await fetch(`${net.path}/routing.json`);
+        if (!response.ok) throw new Error(`${net.path}/routing.json: HTTP ${response.status}`);
+        return { id: net.id, stops: data.stops.filter((stop) => stop.net === net.id), routing: await response.json() };
+      })).then(buildGraph);
       graphPromise.catch(() => { graphPromise = null; });
     }
     return graphPromise;
@@ -293,7 +294,7 @@ export function initPlanner(ctx) {
     for (const leg of option.legs) {
       let chip;
       if (leg.type === 'walk') {
-        if (leg.time < 60 && option.kind === 'bus') continue;
+        if (leg.time < 150 && option.kind === 'bus') continue; // los paseos cortos solo salen en el paso a paso
         chip = h('span', { class: 'walk-pill', title: 'A pie' }, walkIcon(), formatMinutes(leg.time));
       } else {
         chip = h('span', { class: 'leg-lines' }, lineBadge(leg.line),

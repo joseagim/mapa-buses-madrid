@@ -286,7 +286,7 @@ def main():
     for route_id in sorted(routes, key=natural_key):
         route = routes[route_id]
         name = (route.get("route_short_name") or route_id).strip()
-        long_name = (route.get("route_long_name") or "").strip()
+        long_name = (route.get("route_long_name") or "").strip(" -")
         dirs = []
         for direction in (0, 1):
             key = (route_id, direction)

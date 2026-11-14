@@ -126,7 +126,9 @@ a { color: var(--blue); }
   color: var(--muted);
   font-weight: 600;
   font-size: 14px;
+  white-space: nowrap;
 }
+.tabs button[data-tab="transfers"] { flex: 1.5; }
 .tabs button[aria-selected="true"] {
   color: var(--blue);
   border-bottom-color: var(--blue);

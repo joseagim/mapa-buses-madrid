@@ -6,6 +6,10 @@ import { decodePolyline, metersPerPixel, normalizeText, textColorFor } from './g
 import { buildTrack, computeLanes, lanesToOffsets, offsetPath } from './offset.js';
 import { computeTransfers } from './transfers.js';
 import { parseHash, buildHash } from './urlstate.js';
+import { $, h, isMobile, debounce, toast } from './dom.js';
+import { searchStops, stopPlace } from './places.js';
+import { initPlanner } from './planner.js';
+import { initNearby } from './nearby.js';
 
 const NAVY = '#0b2545';
 const DIR_LABEL = { 0: 'Ida', 1: 'Vuelta' };
@@ -27,6 +31,7 @@ const data = {
 
 /** Lo que ha elegido el usuario. */
 const state = {
+  mode: 'lines',          // 'lines' | 'route' | 'nearby'
   selected: [],           // [{id, color, dir}]  dir: 'b' ambos, 'i' ida, 'v' vuelta
   showTransfers: true,
   openStop: null,         // parada con el popup abierto
@@ -41,48 +46,6 @@ let current = {
   near: new Map(),        // id -> parada con otra cercana
   links: [],              // [{a, b, dist}] parejas de paradas cercanas
 };
-
-// ---------------------------------------------------------------------------
-// Utilidades de DOM
-// ---------------------------------------------------------------------------
-
-const $ = (selector) => document.querySelector(selector);
-
-/** Crea un elemento: h('button', {class: 'x', onclick: fn}, 'texto', otroElemento) */
-function h(tag, attrs = {}, ...children) {
-  const el = document.createElement(tag);
-  for (const [key, value] of Object.entries(attrs)) {
-    if (value == null || value === false) continue;
-    if (key === 'class') el.className = value;
-    else if (key === 'text') el.textContent = value;
-    else if (key === 'style') el.style.cssText = value;
-    else if (key.startsWith('on')) el.addEventListener(key.slice(2), value);
-    else el.setAttribute(key, value === true ? '' : value);
-  }
-  for (const child of children.flat()) {
-    if (child != null && child !== false) el.append(child);
-  }
-  return el;
-}
-
-const isMobile = () => window.matchMedia('(max-width: 700px)').matches;
-
-function debounce(fn, ms) {
-  let timer;
-  return (...args) => {
-    clearTimeout(timer);
-    timer = setTimeout(() => fn(...args), ms);
-  };
-}
-
-let toastTimer;
-function toast(message) {
-  const el = $('#toast');
-  el.textContent = message;
-  el.hidden = false;
-  clearTimeout(toastTimer);
-  toastTimer = setTimeout(() => { el.hidden = true; }, 4000);
-}
 
 // ---------------------------------------------------------------------------
 // Mapa
@@ -109,9 +72,11 @@ L.tileLayer('https://tile.openstreetmap.org/{z}/{x}/{y}.png', {
 }).addTo(map);
 
 // Capas, de abajo arriba: borde blanco de las líneas, líneas, enlaces de
-// transbordo y paradas. Solo las paradas reciben clics.
+// transbordo, paradas y, encima, lo que pintan los modos Ruta y Cerca.
+// Solo las paradas y esa última capa reciben clics.
 for (const [name, zIndex, interactive] of [
   ['casing', 410, false], ['routes', 420, false], ['links', 430, false], ['stops', 440, true],
+  ['journey', 450, true],
 ]) {
   const pane = map.createPane(name);
   pane.style.zIndex = zIndex;
@@ -121,6 +86,8 @@ const casingRenderer = L.svg({ pane: 'casing', padding: 0.5 });
 const routeRenderer = L.svg({ pane: 'routes', padding: 0.5 });
 const linkRenderer = L.svg({ pane: 'links', padding: 0.5 });
 const stopRenderer = L.canvas({ pane: 'stops', padding: 0.3, tolerance: 7 });
+// En SVG para que sus huecos dejen pasar los clics a las paradas de debajo.
+const journeyRenderer = L.svg({ pane: 'journey', padding: 0.5 });
 
 const casingGroup = L.layerGroup().addTo(map);
 const routeGroup = L.layerGroup().addTo(map);
@@ -170,7 +137,8 @@ async function loadBaseData() {
     data.lineByName.set(line.name.toUpperCase(), line);
   }
   data.stops = stopsFile.stops.map(([id, code, name, lat, lon, lines]) => ({
-    id, code, name, lat, lon, lines,
+    net: NETWORK.id, id, code, name, lat, lon, lines,
+    nameNorm: normalizeText(name),
     search: normalizeText(`${code} ${name}`),
   }));
   for (const stop of data.stops) data.stopById.set(stop.id, stop);
@@ -215,7 +183,12 @@ function addLines(ids) {
 }
 
 function removeLine(id) {
-  state.selected = state.selected.filter((s) => s.id !== id);
+  removeLines([id]);
+}
+
+function removeLines(ids) {
+  const gone = new Set(ids);
+  state.selected = state.selected.filter((s) => !gone.has(s.id));
   selectionChanged();
 }
 
@@ -235,6 +208,7 @@ async function selectionChanged({ reveal = null, fitAll = false } = {}) {
   renderLineList();
   renderSummary();
   updateUrl();
+  modes.nearby?.onSelection();
   await syncMap();
   if (fitAll) fitToLines(state.selected.map((s) => s.id), false);
   else if (reveal) fitToLines(reveal, true);
@@ -245,6 +219,7 @@ function selectionEdited() {
   renderLineList();
   renderSummary();
   updateUrl();
+  modes.nearby?.onSelection();
   syncMap();
 }
 
@@ -257,9 +232,12 @@ let syncCounter = 0;
 /** Carga lo que falte y redibuja líneas, paradas y transbordos. */
 async function syncMap() {
   const ticket = ++syncCounter;
+  // En el modo Ruta el mapa es para el itinerario: las líneas elegidas se
+  // guardan, pero no se pintan hasta volver a Líneas o Cerca.
+  const shown = state.mode === 'route' ? [] : state.selected;
   let files;
   try {
-    files = await Promise.all(state.selected.map((s) => loadLine(s.id)));
+    files = await Promise.all(shown.map((s) => loadLine(s.id)));
   } catch (error) {
     console.error(error);
     toast('No se han podido cargar los datos de alguna línea.');
@@ -270,7 +248,7 @@ async function syncMap() {
   const display = [];
   const stopInfo = new Map();
   const lineStops = [];
-  state.selected.forEach((sel, order) => {
+  shown.forEach((sel, order) => {
     const stops = new Map();
     for (const dir of files[order].dirs) {
       const wanted = sel.dir === 'b' || (sel.dir === 'i' ? dir.dir === 0 : dir.dir === 1);
@@ -462,7 +440,18 @@ function stopPopupContent(stop) {
           : missing.length === lines.length ? `Seleccionar las ${lines.length} líneas`
             : missing.length === 1 ? 'Seleccionar la que falta' : `Seleccionar las ${missing.length} que faltan`,
     }),
+    h('div', { class: 'sp-route' },
+      h('button', { type: 'button', class: 'btn small', onclick: () => routeFromPopup('from', stopPlace(stop)), text: 'Salir de aquí' }),
+      h('button', { type: 'button', class: 'btn small', onclick: () => routeFromPopup('to', stopPlace(stop)), text: 'Llegar aquí' }),
+    ),
   );
+}
+
+/** Usa un lugar como origen o destino de la ruta (desde un popup del mapa). */
+function routeFromPopup(which, place) {
+  map.closePopup();
+  setMode('route');
+  modes.route.setEndpoint(which, place);
 }
 
 function openStop(stop) {
@@ -489,41 +478,37 @@ function focusStop(stop) {
 
 function renderStopResults() {
   const list = $('#stop-results');
-  const query = normalizeText($('#stop-search').value);
+  const text = $('#stop-search').value;
   list.replaceChildren();
-  if (query.length < 2) {
+  if (normalizeText(text).length < 2) {
     list.append(h('li', { class: 'empty', text: 'Escribe al menos 2 caracteres: un nombre («Cibeles», «Atocha») o el código de la parada.' }));
     return;
   }
-  const tokens = query.split(/\s+/);
-  const matches = [];
-  for (const stop of data.stops) {
-    if (!tokens.every((t) => stop.search.includes(t))) continue;
-    // primero el código exacto, luego los que empiezan por el texto buscado
-    const score = stop.code === query ? 0 : stop.code.startsWith(query) ? 1 : normalizeText(stop.name).startsWith(query) ? 2 : 3;
-    matches.push([score, stop]);
-  }
-  matches.sort((a, b) => a[0] - b[0] || a[1].name.localeCompare(b[1].name, 'es') || a[1].code.localeCompare(b[1].code, 'es', { numeric: true }));
+  const MAX = 60;
+  const { matches, total } = searchStops(data.stops, text, MAX);
   if (!matches.length) {
     list.append(h('li', { class: 'empty', text: 'No hay paradas que coincidan.' }));
     return;
   }
-  const MAX = 60;
-  for (const [, stop] of matches.slice(0, MAX)) {
-    const names = stop.lines.map((id) => data.lineById.get(id)?.name).filter(Boolean);
+  for (const stop of matches) {
     list.append(h('li', {},
       h('button', { type: 'button', class: 'stop-row', onclick: () => focusStop(stop) },
         h('span', { class: 'stop-code', text: stop.code }),
         h('span', { class: 'stop-text' },
           h('span', { class: 'stop-name', text: stop.name }),
-          h('span', { class: 'stop-lines', text: names.join(' · ') }),
+          h('span', { class: 'stop-lines', text: lineNames(stop) }),
         ),
       ),
     ));
   }
-  if (matches.length > MAX) {
-    list.append(h('li', { class: 'empty', text: `Hay ${matches.length - MAX} paradas más: afina la búsqueda.` }));
+  if (total > MAX) {
+    list.append(h('li', { class: 'empty', text: `Hay ${total - MAX} paradas más: afina la búsqueda.` }));
   }
+}
+
+/** «C1 · 27 · 73»: nombres de las líneas de una parada. */
+function lineNames(stop) {
+  return stop.lines.map((id) => data.lineById.get(id)?.name).filter(Boolean).join(' · ');
 }
 
 // ---------------------------------------------------------------------------
@@ -660,7 +645,11 @@ const selectionEditedSoon = debounce(selectionEdited, 60);
 function renderSummary() {
   const box = $('#summary');
   box.replaceChildren();
-  for (const sel of state.selected) box.append(badge(data.lineById.get(sel.id), sel.color));
+  if (state.mode === 'lines') {
+    for (const sel of state.selected) box.append(badge(data.lineById.get(sel.id), sel.color));
+  } else {
+    box.append(...modes[state.mode].summary());
+  }
 }
 
 // ---------------------------------------------------------------------------
@@ -762,13 +751,43 @@ function showTab(name) {
   }
 }
 
+/** Cambia entre los modos Líneas, Ruta y Cerca. Cada uno pinta lo suyo en el mapa. */
+function setMode(mode) {
+  if (!modes[mode] && mode !== 'lines') return;
+  const previous = state.mode;
+  state.mode = mode;
+  for (const button of document.querySelectorAll('.modes [data-mode]')) {
+    button.setAttribute('aria-selected', String(button.dataset.mode === mode));
+  }
+  for (const section of document.querySelectorAll('.mode')) {
+    section.hidden = section.id !== `mode-${mode}`;
+  }
+  if (previous === mode) return;
+  map.closePopup();
+  modes[previous]?.deactivate();
+  modes[mode]?.activate();
+  renderSummary();
+  updateUrl();
+  syncMap();
+}
+
 function setupPanel() {
   $('#panel-toggle').addEventListener('click', () => {
     setPanelCollapsed(!$('#panel').classList.contains('collapsed'));
   });
+  for (const button of document.querySelectorAll('.modes [data-mode]')) {
+    button.addEventListener('click', () => setMode(button.dataset.mode));
+  }
   for (const button of document.querySelectorAll('.tabs [data-tab]')) {
     button.addEventListener('click', () => showTab(button.dataset.tab));
   }
+  // En móvil, al escribir en un buscador la hoja ocupa toda la pantalla para
+  // que el teclado no tape los resultados.
+  const panel = $('#panel');
+  panel.addEventListener('focusin', (e) => {
+    if (e.target.matches('input[type="search"]')) panel.classList.add('typing');
+  });
+  panel.addEventListener('focusout', () => panel.classList.remove('typing'));
   $('#line-search').addEventListener('input', renderLineList);
   $('#line-search').addEventListener('keydown', (e) => {
     // Enter selecciona el primer resultado
@@ -777,9 +796,11 @@ function setupPanel() {
     if (first && !isSelected(first.id)) addLines([first.id]);
   });
   $('#stop-search').addEventListener('input', debounce(renderStopResults, 120));
-  // En móvil, al tocar el mapa se pliega el panel para ver mejor.
-  map.on('click', () => {
-    if (isMobile()) setPanelCollapsed(true);
+  // Un toque en el mapa: en Ruta y Cerca elige un punto; en móvil, además,
+  // se pliega el panel para ver mejor.
+  map.on('click', (e) => {
+    const handled = modes[state.mode]?.onMapClick(e.latlng);
+    if (isMobile() && !handled) setPanelCollapsed(true);
   });
 }
 
@@ -788,12 +809,17 @@ function setupPanel() {
 // ---------------------------------------------------------------------------
 
 let lastHash = null;
+const MODE_TO_URL = { route: 'ruta', nearby: 'cerca' };
+const URL_TO_MODE = { ruta: 'route', cerca: 'nearby' };
 
 const updateUrl = debounce(() => {
   const center = map.getCenter();
+  const params = { ...modes.route?.urlParams(), ...modes.nearby?.urlParams() };
+  if (state.mode !== 'lines') params.t = MODE_TO_URL[state.mode];
   const hash = buildHash(
     state.selected.map((s) => ({ name: data.lineById.get(s.id).name, color: s.color, dir: s.dir })),
     { zoom: map.getZoom(), lat: center.lat, lng: center.lng },
+    params,
   );
   lastHash = hash;
   history.replaceState(null, '', hash || location.pathname + location.search);
@@ -809,6 +835,9 @@ function applyHash() {
     state.selected.push({ id: line.id, color: item.color || nextColor(), dir: item.dir });
   }
   if (parsed.view) map.setView([parsed.view.lat, parsed.view.lng], parsed.view.zoom, { animate: false });
+  modes.route.applyParams(parsed.params, Boolean(parsed.view));
+  modes.nearby.applyParams(parsed.params, Boolean(parsed.view));
+  setMode(URL_TO_MODE[parsed.params.t] || 'lines');
   return Boolean(parsed.view);
 }
 
@@ -821,6 +850,23 @@ window.addEventListener('hashchange', () => {
 // ---------------------------------------------------------------------------
 // Arranque
 // ---------------------------------------------------------------------------
+
+/** Los modos Ruta y Cerca viven en sus módulos; esto es lo que comparten con este. */
+const modes = {};
+
+function setupModes() {
+  const context = {
+    map, data, state,
+    renderers: { casing: casingRenderer, routes: routeRenderer, journey: journeyRenderer },
+    loadLine, selectionOf, isSelected, toggleLine, addLines, removeLines,
+    lineChip, badge, lineNames,
+    openStop, focusStop, viewPadding, setPanelCollapsed, setMode,
+    updateUrl, renderSummary,
+    routeFromPopup,
+  };
+  modes.route = initPlanner(context);
+  modes.nearby = initNearby(context);
+}
 
 async function main() {
   setupPanel();
@@ -835,8 +881,9 @@ async function main() {
     const [y, m, d] = data.feed.date.split('-');
     $('#feed-date').textContent = ` (actualizado el ${d}/${m}/${y})`;
   }
+  setupModes();
   const hadView = applyHash();
-  if (isMobile() && state.selected.length) setPanelCollapsed(true);
+  if (isMobile() && state.selected.length && state.mode === 'lines') setPanelCollapsed(true);
   renderStopResults();
   await selectionChanged({ fitAll: !hadView && state.selected.length > 0 });
 }

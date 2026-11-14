@@ -6,11 +6,29 @@
 //         color   -> hexadecimal sin '#'
 //         sentido -> 'i' solo ida, 'v' solo vuelta; si falta, ambos
 //   m = vista del mapa: zoom/latitud/longitud
+//
+// El resto de claves son de los modos Ruta y Cerca, que las interpretan ellos
+// (parseHash las devuelve tal cual en `params`):
+//
+//   t = modo: 'ruta' o 'cerca' (si falta, Líneas)
+//   o, d = origen y destino de la ruta: latitud,longitud,nombre
+//   h = hora de salida: AAAA-MM-DDTHH:MM (si falta, ahora)
+//   c = centro de «paradas cercanas»: latitud,longitud,radio,nombre
 
 const DIRS = new Set(['b', 'i', 'v']);
 
+/** 'lat,lon,resto...' -> {lat, lon, rest: [..]} o null si no son coordenadas válidas. */
+export function parsePoint(text) {
+  if (!text) return null;
+  const [lat, lon, ...rest] = text.split(',');
+  const point = { lat: Number(lat), lon: Number(lon), rest };
+  if (!Number.isFinite(point.lat) || !Number.isFinite(point.lon)) return null;
+  if (Math.abs(point.lat) > 90 || Math.abs(point.lon) > 180) return null;
+  return point;
+}
+
 export function parseHash(hash) {
-  const out = { lines: [], view: null };
+  const out = { lines: [], view: null, params: {} };
   const text = hash.replace(/^#/, '');
   if (!text) return out;
   for (const part of text.split('&')) {
@@ -38,17 +56,22 @@ export function parseHash(hash) {
       if ([z, lat, lng].every(Number.isFinite) && z >= 0 && z <= 22 && Math.abs(lat) <= 90 && Math.abs(lng) <= 180) {
         out.view = { zoom: z, lat, lng };
       }
+    } else {
+      out.params[key] = value;
     }
   }
   return out;
 }
 
-export function buildHash(lines, view) {
+export function buildHash(lines, view, params = {}) {
   const parts = [];
   if (lines.length) {
     parts.push('l=' + lines
       .map((l) => `${encodeURIComponent(l.name)}:${l.color.slice(1)}${l.dir !== 'b' ? ':' + l.dir : ''}`)
       .join(','));
+  }
+  for (const [key, value] of Object.entries(params)) {
+    if (value != null && value !== '') parts.push(`${key}=${encodeURIComponent(value)}`);
   }
   if (view) {
     parts.push(`m=${view.zoom}/${view.lat.toFixed(4)}/${view.lng.toFixed(4)}`);

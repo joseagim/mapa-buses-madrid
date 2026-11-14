@@ -60,3 +60,53 @@ export function textColorFor(hex) {
   const luminance = (0.299 * r + 0.587 * g + 0.114 * b) / 255;
   return luminance > 0.62 ? '#111' : '#fff';
 }
+
+// ---------------------------------------------------------------------------
+// Búsqueda de paradas por cercanía
+// ---------------------------------------------------------------------------
+
+const GRID_LAT0 = 40.42;
+const GRID_KX = 111320 * Math.cos((GRID_LAT0 * Math.PI) / 180); // m por grado de longitud
+const GRID_KY = 110540;                                          // m por grado de latitud
+
+/**
+ * Rejilla espacial sobre una lista de puntos {lat, lon}: permite pedir «los que
+ * están a menos de R metros de aquí» sin recorrerlos todos.
+ */
+export class PointGrid {
+  constructor(points, cellM = 300) {
+    this.points = points;
+    this.cell = cellM;
+    this.cells = new Map();
+    points.forEach((p, i) => {
+      const key = this.key(Math.floor((p.lon * GRID_KX) / cellM), Math.floor((p.lat * GRID_KY) / cellM));
+      let bucket = this.cells.get(key);
+      if (!bucket) this.cells.set(key, (bucket = []));
+      bucket.push(i);
+    });
+  }
+
+  key(cx, cy) {
+    return cx * 100003 + cy;
+  }
+
+  /** Devuelve [{index, point, dist}] a menos de `radiusM`, del más cercano al más lejano. */
+  within(lat, lon, radiusM) {
+    const cx = Math.floor((lon * GRID_KX) / this.cell);
+    const cy = Math.floor((lat * GRID_KY) / this.cell);
+    const reach = Math.ceil(radiusM / this.cell);
+    const found = [];
+    for (let gx = cx - reach; gx <= cx + reach; gx++) {
+      for (let gy = cy - reach; gy <= cy + reach; gy++) {
+        const bucket = this.cells.get(this.key(gx, gy));
+        if (!bucket) continue;
+        for (const index of bucket) {
+          const point = this.points[index];
+          const dist = distanceM(lat, lon, point.lat, point.lon);
+          if (dist <= radiusM) found.push({ index, point, dist });
+        }
+      }
+    }
+    return found.sort((a, b) => a.dist - b.dist);
+  }
+}

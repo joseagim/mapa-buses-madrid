@@ -32,7 +32,7 @@
 
 ## Pasos
 
-- [ ] 1. Preprocesado: `build_data.py` genera `routing.json` (recorridos, franjas, calendario)
+- [x] 1. Preprocesado: `build_data.py` genera `routing.json` (recorridos, franjas, calendario)
 - [ ] 2. Motor de rutas `js/router.js` (RAPTOR + a pie + alternativas) con prueba en Node
 - [ ] 3. Interfaz en modos Líneas / Ruta / Cerca (reorganizar panel y `app.js`)
 - [ ] 4. Geocodificador `js/geocode.js` y selector de lugar (parada, dirección, punto del mapa)

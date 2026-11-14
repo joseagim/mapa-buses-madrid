@@ -10,6 +10,7 @@ Por defecto lee data/raw/gtfs_emt.zip y escribe en data/emt/:
     index.json          metadatos del feed + lista de líneas
     stops.json          todas las paradas con las líneas que pasan por ellas
     lines/<id>.json     geometría y paradas de cada línea, por sentido
+    routing.json        datos del buscador de rutas: recorridos, franjas y calendario
 
 Solo usa la librería estándar de Python (3.9+), no hay que instalar nada.
 El formato de salida está documentado en el README.
@@ -26,8 +27,18 @@ import zipfile
 from collections import Counter, defaultdict
 from datetime import date
 from pathlib import Path
+from statistics import median
 
 ROOT = Path(__file__).resolve().parent.parent
+
+# Versión del formato de routing.json (la web la comprueba al cargarlo).
+ROUTING_VERSION = 1
+
+# Una franja cuyo intervalo medio supera este valor se trata en la web como
+# horario (se espera a la siguiente salida) y no como frecuencia (se espera
+# medio intervalo). Aquí solo se usa para decidir cuándo hay que guardar las
+# salidas una a una porque no están repartidas de forma regular.
+SCHEDULE_HEADWAY_S = 15 * 60
 
 
 # ---------------------------------------------------------------------------
@@ -140,27 +151,69 @@ def read_feed_dates(zf):
     return feed
 
 
+def read_calendar(zf):
+    """Calendario del feed: qué servicio (tipo de día) funciona cada fecha.
+
+    Devuelve (services, exceptions):
+      services   {service_id: {"days": [L, M, X, J, V, S, D], "from": iso, "to": iso}}
+      exceptions [[fecha_iso, service_id, 1 (añadido) | 2 (quitado)], ...]
+    """
+    iso = lambda d: f"{d[:4]}-{d[4:6]}-{d[6:8]}"
+    names = ("monday", "tuesday", "wednesday", "thursday", "friday", "saturday", "sunday")
+    services, exceptions = {}, []
+    files = zf.namelist()
+    if "calendar.txt" in files:
+        for row in open_csv(zf, "calendar.txt"):
+            services[row["service_id"]] = {
+                "days": [int(row[n] or 0) for n in names],
+                "from": iso(row["start_date"]),
+                "to": iso(row["end_date"]),
+            }
+    if "calendar_dates.txt" in files:
+        for row in open_csv(zf, "calendar_dates.txt"):
+            exceptions.append([iso(row["date"]), row["service_id"], int(row["exception_type"])])
+    return services, sorted(exceptions)
+
+
+def read_frequencies(zf):
+    """trip_id -> (inicio, fin, intervalo) de frequencies.txt, si el feed lo trae.
+
+    En el GTFS de la EMT cada viaje tiene su hora real en stop_times.txt y
+    además una fila aquí que dice a qué franja de frecuencia pertenece.
+    """
+    freq = {}
+    if "frequencies.txt" in zf.namelist():
+        for row in open_csv(zf, "frequencies.txt"):
+            freq[row["trip_id"]] = (parse_time(row["start_time"]), parse_time(row["end_time"]),
+                                    int(row["headway_secs"]))
+    return freq
+
+
 def read_trips(zf):
-    """trip_id -> (route_id, direction) y contadores de shape y cabecera por sentido."""
+    """trip_id -> (route_id, direction), trip_id -> service_id y contadores de
+    shape y cabecera por sentido."""
     trip_key = {}
+    trip_service = {}
     shapes = defaultdict(Counter)
     headsigns = defaultdict(Counter)
     for row in open_csv(zf, "trips.txt"):
         key = (row["route_id"], int(row.get("direction_id") or 0))
         trip_key[row["trip_id"]] = key
+        trip_service[row["trip_id"]] = row["service_id"]
         if row.get("shape_id"):
             shapes[key][row["shape_id"]] += 1
         if row.get("trip_headsign"):
             headsigns[key][row["trip_headsign"].strip()] += 1
-    return trip_key, shapes, headsigns
+    return trip_key, trip_service, shapes, headsigns
 
 
 def read_patterns(zf, trip_key):
     """Recorre stop_times.txt en streaming y agrupa los viajes por secuencia de paradas.
 
-    Devuelve {(route_id, direction): {tupla_de_paradas: [n_viajes, tiempos, distancias]}}.
+    Devuelve {(route_id, direction): {tupla_de_paradas: [n_viajes, tiempos, distancias, viajes]}}.
     Los tiempos (s) y distancias (m) son acumulados desde la primera parada y se
-    guardan solo del primer viaje visto con cada secuencia.
+    guardan solo del primer viaje visto con cada secuencia. `viajes` es la lista
+    de (trip_id, hora de salida, duración) de todos los viajes con esa secuencia.
     """
     patterns = defaultdict(dict)
     seen = set()
@@ -171,15 +224,20 @@ def read_patterns(zf, trip_key):
             return
         rows.sort(key=lambda r: r[0])
         stops = tuple(r[1] for r in rows)
+        t0 = rows[0][2]
+        trip = None
+        if t0 is not None and rows[-1][2] is not None:
+            trip = (trip_id, t0, rows[-1][2] - t0)
         entry = patterns[key].get(stops)
         if entry:
             entry[0] += 1
+            if trip:
+                entry[3].append(trip)
             return
-        t0 = rows[0][2]
         d0 = rows[0][3]
         times = [None if (r[2] is None or t0 is None) else r[2] - t0 for r in rows]
         dists = [None if (r[3] is None or d0 is None) else round(r[3] - d0) for r in rows]
-        patterns[key][stops] = [1, times, dists]
+        patterns[key][stops] = [1, times, dists, [trip] if trip else []]
 
     with zf.open("stop_times.txt") as raw:
         reader = csv.reader(io.TextIOWrapper(raw, encoding="utf-8-sig", newline=""))
@@ -233,6 +291,89 @@ def read_shapes(zf, wanted):
 
 
 # ---------------------------------------------------------------------------
+# Datos del buscador de rutas
+# ---------------------------------------------------------------------------
+
+def build_bands(trips, freq):
+    """Comprime las salidas de un recorrido en un tipo de día en «franjas».
+
+    `trips` es una lista de (trip_id, salida, duración). Devuelve una lista
+    plana [primera, última, n, duración, primera, última, n, duración, ...]:
+    en cada franja hay `n` salidas repartidas de forma regular entre `primera`
+    y `última` (segundos desde las 0:00 del día de servicio; pueden pasar de
+    24 h), y el recorrido completo dura `duración` segundos.
+
+    Se agrupan las salidas consecutivas que comparten franja de frequencies.txt.
+    Sin ese fichero (un GTFS de horarios puros), las que se suceden con el
+    mismo intervalo. Si una franja tiene intervalos largos e irregulares, se
+    guarda salida a salida para no inventar horas.
+    """
+    trips = sorted(trips, key=lambda t: t[1])
+    groups = []
+    for trip in trips:
+        key = freq.get(trip[0])
+        last = groups[-1] if groups else None
+        if last and key is not None and last["key"] == key:
+            last["trips"].append(trip)
+        elif (last and key is None and last["key"] is None
+              and (len(last["trips"]) == 1
+                   or abs((trip[1] - last["trips"][-1][1])
+                          - (last["trips"][1][1] - last["trips"][0][1])) <= 60)
+              and abs(trip[2] - last["trips"][0][2]) <= 0.15 * max(last["trips"][0][2], 1)):
+            last["trips"].append(trip)
+        else:
+            groups.append({"key": key, "trips": [trip]})
+
+    bands = []
+    for group in groups:
+        starts = [t[1] for t in group["trips"]]
+        n = len(starts)
+        regular = True
+        if n > 2:
+            mean = (starts[-1] - starts[0]) / (n - 1)
+            if mean > SCHEDULE_HEADWAY_S:
+                regular = all(abs((b - a) - mean) <= 120 for a, b in zip(starts, starts[1:]))
+        if regular:
+            bands += [starts[0], starts[-1], n, round(median(t[2] for t in group["trips"]))]
+        else:
+            for trip in group["trips"]:
+                bands += [trip[1], trip[1], 1, trip[2]]
+    return bands
+
+
+def build_routing(patterns, stop_index, trip_service, freq, services, exceptions, network_id):
+    """Monta routing.json: todos los recorridos con sus franjas por tipo de día."""
+    out = []
+    used_services = set()
+    for (route_id, direction) in sorted(patterns, key=lambda k: (natural_key(k[0]), k[1])):
+        for stops, (_n, times, _dists, trips) in patterns[(route_id, direction)].items():
+            if len(stops) < 2 or not trips or any(t is None for t in times):
+                continue
+            if any(s not in stop_index for s in stops) or times[-1] <= 0:
+                continue
+            by_service = defaultdict(list)
+            for trip in trips:
+                by_service[trip_service[trip[0]]].append(trip)
+            bands = {svc: build_bands(lst, freq) for svc, lst in sorted(by_service.items())}
+            used_services.update(bands)
+            out.append({
+                "line": route_id,
+                "dir": direction,
+                "stops": [stop_index[s] for s in stops],
+                "time": times,
+                "bands": bands,
+            })
+    return {
+        "version": ROUTING_VERSION,
+        "network": network_id,
+        "scheduleHeadway": SCHEDULE_HEADWAY_S,
+        "services": {k: v for k, v in services.items() if k in used_services},
+        "exceptions": [e for e in exceptions if e[1] in used_services],
+        "patterns": out,
+    }
+
+
+# ---------------------------------------------------------------------------
 # Programa principal
 # ---------------------------------------------------------------------------
 
@@ -263,7 +404,9 @@ def main():
             feed["date"] = args.date
 
         routes = {r["route_id"]: r for r in open_csv(zf, "routes.txt")}
-        trip_key, shape_count, headsign_count = read_trips(zf)
+        trip_key, trip_service, shape_count, headsign_count = read_trips(zf)
+        services, exceptions = read_calendar(zf)
+        freq = read_frequencies(zf)
         print(f"  {len(routes)} líneas, {len(trip_key)} viajes")
 
         print("  leyendo stop_times.txt (tarda un poco) ...")
@@ -298,7 +441,7 @@ def main():
                 for stop_id in stops:
                     stop_lines[stop_id].add(route_id)
             # Variante representativa: la más frecuente (y, a igualdad, la más larga)
-            stops, (n_trips, times, dists) = max(
+            stops, (n_trips, times, dists, _trips) = max(
                 pats.items(), key=lambda kv: (kv[1][0], len(kv[0])))
             if len(pats) > 1:
                 warnings.append(f"línea {name} sentido {direction}: {len(pats)} variantes "
@@ -365,6 +508,14 @@ def main():
         "fields": ["id", "code", "name", "lat", "lon", "lines"],
         "stops": stops_out,
     })
+    # --- Buscador de rutas -------------------------------------------------
+    # Las paradas se referencian por su posición en stops.json.
+    stop_index = {s[0]: i for i, s in enumerate(stops_out)}
+    routing = build_routing(patterns, stop_index, trip_service, freq,
+                            services, exceptions, args.network_id)
+    write_json(out / "routing.json", routing)
+    n_bands = sum(len(b) // 4 for p in routing["patterns"] for b in p["bands"].values())
+
     write_json(out / "index.json", {
         "network": {"id": args.network_id, "name": args.network_name},
         "feed": feed,
@@ -378,6 +529,9 @@ def main():
     print(f"  {len(lines_index)} líneas, {len(stops_out)} paradas "
           f"({len(stops_raw) - len(stops_out)} sin servicio descartadas)")
     print(f"  geometría: {pts_before} -> {pts_after} puntos (tolerancia {args.tolerance} m)")
+    print(f"  rutas: {len(routing['patterns'])} recorridos, {n_bands} franjas, "
+          f"{len(routing['services'])} tipos de día "
+          f"({(out / 'routing.json').stat().st_size / 1024:.0f} KB)")
     print(f"  tamaño total: {size / 1024:.0f} KB")
     print(f"  fecha del GTFS: {feed['date']}")
     if warnings:

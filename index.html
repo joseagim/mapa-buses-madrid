@@ -1,0 +1,83 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <title>Mapa de buses de Madrid (EMT) · no oficial</title>
+  <meta name="description" content="Mapa interactivo no oficial de las líneas de autobús de la EMT de Madrid: elige líneas, píntalas en el mapa y descubre dónde hacer transbordo.">
+  <meta name="theme-color" content="#0b5cad">
+  <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='7' fill='%230b5cad'/%3E%3Cpath d='M6 22 L13 10 L19 18 L26 8' fill='none' stroke='white' stroke-width='3.2' stroke-linecap='round' stroke-linejoin='round'/%3E%3Ccircle cx='13' cy='10' r='2.6' fill='%23ffd60a'/%3E%3C/svg%3E">
+
+  <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css"
+        integrity="sha256-p4NxAoJBhIIN+hmNHrzRCf9tD/miZyoHS5obTRR9BMY=" crossorigin="">
+  <link rel="stylesheet" href="css/style.css">
+</head>
+<body>
+  <div id="map" aria-label="Mapa de Madrid"></div>
+
+  <aside id="panel" aria-label="Panel de líneas y paradas">
+    <header id="panel-head">
+      <button id="panel-toggle" type="button" aria-label="Mostrar u ocultar el panel" aria-expanded="true">
+        <span class="grip" aria-hidden="true"></span>
+        <span class="brand">
+          <strong>Buses de Madrid</strong>
+          <small>Líneas EMT · mapa no oficial</small>
+        </span>
+        <span id="summary" class="summary"></span>
+        <span class="chevron" aria-hidden="true"></span>
+      </button>
+    </header>
+
+    <div id="panel-body">
+      <nav class="tabs" role="tablist">
+        <button type="button" role="tab" data-tab="lines" aria-selected="true">Líneas</button>
+        <button type="button" role="tab" data-tab="stops" aria-selected="false">Paradas</button>
+        <button type="button" role="tab" data-tab="transfers" aria-selected="false">Transbordos <span id="transfer-count" class="count" hidden></span></button>
+      </nav>
+
+      <section id="tab-lines" class="tab" role="tabpanel">
+        <div class="search">
+          <input id="line-search" type="search" placeholder="Buscar línea: C1, 27, Circular…" autocomplete="off" aria-label="Buscar línea por número o nombre">
+        </div>
+        <div class="scroll">
+          <div id="selected-box"></div>
+          <h2 id="line-list-title" class="section-title">Todas las líneas</h2>
+          <ul id="line-list" class="line-list"></ul>
+        </div>
+      </section>
+
+      <section id="tab-stops" class="tab" role="tabpanel" hidden>
+        <div class="search">
+          <input id="stop-search" type="search" placeholder="Buscar parada: nombre o código…" autocomplete="off" aria-label="Buscar parada por nombre o código">
+        </div>
+        <div class="scroll">
+          <ul id="stop-results" class="stop-results"></ul>
+        </div>
+      </section>
+
+      <section id="tab-transfers" class="tab" role="tabpanel" hidden>
+        <div class="scroll" id="transfers-box"></div>
+      </section>
+
+      <footer id="credits">
+        <p>
+          <a href="https://www.emtmadrid.es" target="_blank" rel="noopener"><strong>Powered by EMT de Madrid</strong></a>.
+          Datos procesados a partir del GTFS oficial de la EMT<span id="feed-date"></span>.
+          <a href="https://mobilitylabs.emtmadrid.es/sip/terms-of-use" target="_blank" rel="noopener">Condiciones de uso</a>.
+        </p>
+        <p>
+          Mapa © <a href="https://www.openstreetmap.org/copyright" target="_blank" rel="noopener">colaboradores de OpenStreetMap</a>.
+          Esta web <strong>no es una aplicación oficial de la EMT</strong>.
+          <a href="https://github.com/joseagim/mapa-buses-madrid" target="_blank" rel="noopener">Código en GitHub</a> (MIT).
+        </p>
+      </footer>
+    </div>
+  </aside>
+
+  <div id="toast" role="status" aria-live="polite" hidden></div>
+
+  <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"
+          integrity="sha256-20nQCchB9co0qIjJZRGuk2/Z9VM+kNiyxNV1lvTlZBo=" crossorigin=""></script>
+  <script type="module" src="js/app.js"></script>
+</body>
+</html>

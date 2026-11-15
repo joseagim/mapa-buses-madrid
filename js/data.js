@@ -54,6 +54,7 @@ export function createStore() {
     lineByUrl: new Map(),   // texto de la URL en mayúsculas -> línea
     stops: [],              // todas las paradas, sin repetir
     stopById: new Map(),
+    stopsByCode: new Map(), // código -> paradas con ese código (para unir postes compartidos)
     stopsVersion: 0,        // cambia cada vez que se cargan paradas de otra red
   };
 }
@@ -90,26 +91,49 @@ export function addIndex(store, netId, index) {
   return net.lines;
 }
 
+// Los interurbanos que entran en Madrid paran en postes de la EMT, y el GTFS
+// del CRTM los trae con el mismo código de parada que el de la EMT. Si además
+// están en el mismo sitio (a menos de 40 m) son la misma parada.
+const SAME_STOP_M = 40;
+const KX = 111320 * Math.cos((40.42 * Math.PI) / 180);
+const KY = 110540;
+const netRank = (id) => NETWORKS.findIndex((n) => n.id === id);
+
 /**
- * Añade las paradas de una red (su stops.json) uniéndolas por id con las que
- * ya hubiera. Devuelve la lista en el orden del fichero, que es el que usan
- * los horarios (routing.json) para referirse a ellas.
+ * Añade las paradas de una red (su stops.json) uniéndolas con las que ya
+ * hubiera: por id (las dos redes del CRTM comparten paradas) o por código y
+ * posición (postes de la EMT donde también paran interurbanos). Devuelve la
+ * lista en el orden del fichero, que es el que usan los horarios
+ * (routing.json) para referirse a ellas.
  */
 export function addStops(store, netId, file) {
   const net = netState(store, netId);
   net.stops = file.stops.map(([id, code, name, lat, lon, lineIndexes]) => {
     const lines = lineIndexes.map((i) => net.lines[i].id);
     let stop = store.stopById.get(id);
+    if (!stop) {
+      stop = (store.stopsByCode.get(code) || []).find((other) => (
+        other.net !== netId
+        && Math.hypot((other.lon - lon) * KX, (other.lat - lat) * KY) <= SAME_STOP_M));
+      if (stop) store.stopById.set(id, stop);
+    }
     if (stop) {
       for (const line of lines) if (!stop.lines.includes(line)) stop.lines.push(line);
+      // Manda el nombre de la red que va antes en NETWORKS (la EMT en Madrid)
+      if (netRank(netId) < netRank(stop.net)) {
+        Object.assign(stop, { net: netId, name, lat, lon, nameNorm: normalizeText(name), search: normalizeText(`${code} ${name}`) });
+      }
     } else {
       stop = {
         id, code, name, lat, lon, lines,
+        net: netId,   // red de la que salen su nombre y su posición
         nameNorm: normalizeText(name),
         search: normalizeText(`${code} ${name}`),
       };
       store.stopById.set(id, stop);
       store.stops.push(stop);
+      if (!store.stopsByCode.has(code)) store.stopsByCode.set(code, []);
+      store.stopsByCode.get(code).push(stop);
     }
     return stop;
   });

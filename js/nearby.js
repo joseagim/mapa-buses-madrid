@@ -142,12 +142,12 @@ export function initNearby(ctx) {
         ),
       ),
       // Agrupadas por red, cada una con su nombre y su color
-      NETWORKS.map((net) => {
+      h('div', { class: 'near-nets' }, NETWORKS.map((net) => {
         const own = st.lines.filter((line) => line.net === net.id);
         return own.length ? h('div', { class: 'sp-net' },
           h('div', { class: `sp-net-name net-text-${net.id}`, text: `${net.name} (${own.length})` }),
           h('div', { class: 'chips near-chips' }, own.map(ctx.lineChip))) : null;
-      }),
+      })),
       h('p', { class: 'hint-small', text: 'Pulsa una línea para pintarla en el mapa o quitarla.' }),
       h('h2', { class: 'section-title', text: 'Paradas, de la más cercana a la más lejana' }),
     );

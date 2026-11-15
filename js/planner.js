@@ -480,73 +480,51 @@ export function initPlanner(ctx) {
     }
   }
 
-  /** Índice del punto del trazado más cercano a cada parada de un sentido de línea. */
-  function stopTrackIndexes(dir) {
-    if (dir.stopIdx) return dir.stopIdx;
-    const { lat, lon, n } = dir.track;
-    const cum = new Float64Array(n);
-    for (let i = 1; i < n; i++) {
-      cum[i] = cum[i - 1] + Math.hypot((lon[i] - lon[i - 1]) * KX, (lat[i] - lat[i - 1]) * KY);
-    }
-    const indexes = [];
-    let from = 0;
-    dir.stops.forEach((id, k) => {
-      const stop = data.stopById.get(id);
-      if (!stop) {
-        indexes.push(from);
-        return;
-      }
-      // Se busca hacia delante, y solo hasta donde puede estar la parada según
-      // la distancia del GTFS: así no se salta a otra pasada por la misma calle.
-      const step = k > 0 && dir.dist?.[k] != null && dir.dist[k - 1] != null ? dir.dist[k] - dir.dist[k - 1] : null;
-      const reach = k === 0 ? 400 : step != null ? step * 1.5 + 200 : Infinity;
-      let best = from;
-      let bestDist = Infinity;
-      for (let i = from; i < n && cum[i] - cum[from] <= reach; i++) {
-        const d = Math.hypot((lon[i] - stop.lon) * KX, (lat[i] - stop.lat) * KY);
+  /**
+   * Punto del trazado (su índice) por el que se pasa junto a una parada,
+   * buscando desde `from` hacia delante: el más cercano del primer tramo que
+   * pase a menos de 120 m. Devuelve -1 si el trazado no pasa por allí.
+   */
+  function trackIndexNear(track, stop, from) {
+    const { lat, lon, n } = track;
+    let best = -1;
+    let bestDist = Infinity;
+    for (let i = from; i < n; i++) {
+      const d = Math.hypot((lon[i] - stop.lon) * KX, (lat[i] - stop.lat) * KY);
+      if (d <= 120) {
         if (d < bestDist) {
           bestDist = d;
           best = i;
         }
+      } else if (best >= 0) {
+        break; // ya se ha pasado de largo
       }
-      indexes.push(best);
-      from = best;
-    });
-    dir.stopIdx = indexes;
-    return indexes;
+    }
+    return best;
   }
 
   /**
    * Trazado por las calles de un tramo en autobús.
    *
    * Solo se guarda el trazado del recorrido principal de cada línea y sentido,
-   * y un viaje puede ir por una variante (saltarse paradas, entrar a una
-   * urbanización...). Por eso se avanza parada a parada: mientras dos paradas
-   * consecutivas del tramo estén también, y en ese orden, en el recorrido
-   * principal, se sigue su trazado; donde no, se unen en línea recta.
+   * y un viaje puede ir por una variante (saltarse paradas, usar otra dársena,
+   * entrar a una urbanización...). Por eso se avanza parada a parada: mientras
+   * el trazado principal pase junto a dos paradas consecutivas del tramo, se
+   * sigue; donde no, se unen en línea recta.
    */
   async function legPath(leg) {
     const straight = leg.stops.map((s) => [s.lat, s.lon]);
     try {
       const file = await ctx.loadLine(leg.line);
-      const dir = file.dirs.find((d) => d.dir === leg.dir);
-      if (!dir) return straight;
-      const indexes = stopTrackIndexes(dir);
-      const { lat, lon } = dir.track;
-      const where = new Map(); // id de parada -> posiciones en el recorrido principal
-      dir.stops.forEach((id, k) => {
-        if (!where.has(id)) where.set(id, []);
-        where.get(id).push(k);
-      });
-      const after = (id, k) => where.get(id)?.find((pos) => pos > k) ?? -1;
-
+      const track = file.dirs.find((d) => d.dir === leg.dir)?.track;
+      if (!track) return straight;
       const points = [straight[0]];
-      let last = after(leg.stops[0].id, -1); // posición de la última parada encontrada
-      let chained = last >= 0;               // ¿la parada anterior estaba en el recorrido?
+      let last = trackIndexNear(track, leg.stops[0], 0); // por dónde va el trazado
+      let chained = last >= 0;                           // ¿la parada anterior estaba en él?
       for (let i = 1; i < leg.stops.length; i++) {
-        const k = after(leg.stops[i].id, last);
-        if (chained && k >= 0 && indexes[k] > indexes[last]) {
-          for (let j = indexes[last] + 1; j <= indexes[k]; j++) points.push([lat[j], lon[j]]);
+        const k = trackIndexNear(track, leg.stops[i], Math.max(last, 0));
+        if (chained && k > last) {
+          for (let j = last + 1; j <= k; j++) points.push([track.lat[j], track.lon[j]]);
         } else {
           points.push(straight[i]);
         }

@@ -83,7 +83,7 @@ export function initPlanner(ctx) {
     onchange: () => {
       if (!WHEN_RE.test(whenInput.value)) return;
       st.when = whenInput.value;
-      compute();
+      compute({ raise: false });
     },
   });
 
@@ -96,7 +96,7 @@ export function initPlanner(ctx) {
       st.when = whenInput.value;
       whenInput.hidden = false;
     }
-    compute();
+    compute({ raise: false });
   }
 
   $('#route-form').append(
@@ -140,7 +140,6 @@ export function initPlanner(ctx) {
         }
       });
     }
-    if (isMobile()) ctx.setPanelCollapsed(false);
     compute();
   }
 
@@ -185,8 +184,14 @@ export function initPlanner(ctx) {
   }
 
   let ticket = 0;
-  async function compute({ fit = true, select: wanted = 0 } = {}) {
+  /**
+   * Recalcula las rutas. `raise`: en móvil, deja la hoja a media pantalla para
+   * que se vean a la vez el mapa y las opciones (solo cuando cambia el origen
+   * o el destino, no al cambiar la hora).
+   */
+  async function compute({ fit = true, select: wanted = 0, raise = true } = {}) {
     const mine = ++ticket;
+    if (raise && isMobile() && st.active) ctx.setSheet('half');
     ctx.updateUrl();
     drawPins();
     st.result = null;

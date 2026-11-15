@@ -17,7 +17,7 @@ paso sin marcar. Este fichero se borra antes del push.
   añadir una línea desde el modo Ruta se cambia de modo y se cierra el popup.
   Arreglo: actualizar el popup sin sustituir sus nodos, cortar la propagación
   del clic en el contenedor y no cerrarlo al cambiar de modo.
-- [ ] **A2. Panel móvil con tres alturas** (plegado, media pantalla, ~90 %),
+- [x] **A2. Panel móvil con tres alturas** (plegado, media pantalla, ~90 %),
   arrastrable con el dedo, con scroll interior. Al calcular una ruta sube solo
   a media pantalla.
 

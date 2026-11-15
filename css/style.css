@@ -778,26 +778,37 @@ ul, ol.route-list, ol.steps { list-style: none; margin: 0; padding: 0; }
 @media (max-width: 700px) {
   :root { --head-h: 58px; }
 
+  /* Tres alturas: plegada (solo la cabecera), media pantalla y casi completa.
+     Se cambia de una a otra pulsando o arrastrando la cabecera (js/app.js). */
   #panel {
     top: auto;
     left: 0;
     right: 0;
     bottom: 0;
     width: auto;
-    height: min(64dvh, 580px);
+    height: 50dvh;
+    max-height: calc(100dvh - 12px);
     border-radius: 16px 16px 0 0;
-    transition: transform 0.25s ease;
+    transition: height 0.25s ease;
     padding-bottom: env(safe-area-inset-bottom);
   }
+  #panel[data-sheet="full"] { height: 90dvh; }
   #panel.collapsed {
     bottom: 0;
-    transform: translateY(calc(100% - var(--head-h) - env(safe-area-inset-bottom)));
+    height: calc(var(--head-h) + env(safe-area-inset-bottom));
   }
   #panel.collapsed #panel-body { display: flex; visibility: hidden; }
+  #panel.dragging { transition: none; }
   /* Al escribir en un buscador la hoja crece para que el teclado no tape los resultados */
-  #panel.typing:not(.collapsed) { height: calc(100dvh - 12px); }
+  #panel.typing:not(.collapsed):not(.dragging) { height: calc(100dvh - 12px); }
 
-  #panel-toggle { position: relative; padding-top: 16px; }
+  /* En Ruta y Cerca el formulario se desplaza junto con los resultados, para
+     aprovechar todo el alto de la hoja al leer los detalles. */
+  #mode-route, #mode-nearby { overflow-y: auto; overscroll-behavior: contain; -webkit-overflow-scrolling: touch; }
+  #mode-route > .scroll, #mode-nearby > .scroll { flex: none; overflow: visible; }
+
+  #panel-toggle { position: relative; padding-top: 16px; touch-action: none; cursor: grab; }
+  #panel.dragging #panel-toggle { cursor: grabbing; }
   .grip {
     display: block;
     position: absolute;
@@ -810,8 +821,9 @@ ul, ol.route-list, ol.steps { list-style: none; margin: 0; padding: 0; }
     background: rgba(255, 255, 255, 0.6);
   }
   .brand strong { font-size: 16px; }
-  .chevron { transform: rotate(45deg) translate(-2px, -2px); }
-  #panel.collapsed .chevron { transform: rotate(-135deg) translate(-2px, -2px); }
+  /* La flecha apunta hacia donde irá la hoja al pulsar: arriba, salvo cuando ya está arriba del todo */
+  .chevron, #panel.collapsed .chevron { transform: rotate(-135deg) translate(-2px, -2px); }
+  #panel[data-sheet="full"] .chevron { transform: rotate(45deg) translate(-2px, -2px); }
 
   .line-row, .stop-row, .suggest-row { padding-top: 10px; padding-bottom: 10px; }
   .modes button { padding-top: 10px; padding-bottom: 8px; }

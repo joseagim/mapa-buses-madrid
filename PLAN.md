@@ -60,13 +60,13 @@ paso sin marcar. Este fichero se borra antes del push.
 
 ## C. Legal y documentación
 
-- [ ] **C1. Créditos** en la web («Powered by CRTM», fecha, licencia) y README:
+- [x] **C1. Créditos** en la web («Powered by CRTM», fecha, licencia) y README:
   cómo actualizar cada red, formato de datos, licencias (código MIT, datos del
   CRTM bajo su licencia, datos de la EMT bajo sus condiciones).
 
 ## Verificación
 
-- [ ] **V1. Navegador, escritorio y móvil**, con capturas: popup de parada,
+- [x] **V1. Navegador, escritorio y móvil**, con capturas: popup de parada,
   tres alturas del panel, rutas entre redes (Colmenar Viejo → Plaza de
   Castilla, Alcalá de Henares → Avenida de América, Móstoles → Príncipe Pío,
   Las Rozas → Moncloa), líneas 1 y 2 de Colmenar frente a las de la EMT, y

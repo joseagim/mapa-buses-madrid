@@ -1,51 +1,66 @@
 # Mapa de buses de Madrid
 
-Mapa interactivo **no oficial** de las líneas de autobús urbano de la EMT de Madrid, con **buscador de rutas**.
+Mapa interactivo **no oficial** de los autobuses de Madrid, con **buscador de rutas**: la **EMT**, los **interurbanos** del Consorcio Regional de Transportes (CRTM) y los **urbanos de otros municipios** (Alcalá de Henares, Móstoles, Las Rozas, Getafe…).
 
-En el plano del metro se ve de un vistazo cómo se conectan las líneas, pero con más de 200 líneas de autobús eso es imposible. Esta web te deja **elegir unas cuantas líneas, verlas pintadas sobre el mapa por sus calles reales y descubrir dónde se cruzan** para hacer transbordo. Y desde la v0.2, también **calcular cómo ir de un punto a otro** y ver **qué paradas tienes cerca**.
+En el plano del metro se ve de un vistazo cómo se conectan las líneas, pero con más de 700 líneas de autobús eso es imposible. Esta web te deja **elegir unas cuantas líneas, verlas pintadas sobre el mapa por sus calles reales y descubrir dónde se cruzan** para hacer transbordo, **calcular cómo ir de un punto a otro** combinando redes y ver **qué paradas tienes cerca**.
 
-![Captura de la web con las líneas C1, C2, 27, 73 y 14](docs/captura.jpg)
+![Líneas 1 y 2 de la EMT, 1 y 2 de Las Rozas y dos interurbanas, cada una con la etiqueta de su red](docs/captura.jpg)
 
 | Ruta entre dos puntos | Paradas cercanas |
 | --- | --- |
-| ![Ruta de Callao a Avenida de América con tres alternativas](docs/captura-ruta.jpg) | ![Paradas a menos de 300 m de la plaza del Callao](docs/captura-cerca.jpg) |
+| ![Ruta de Las Rozas a Moncloa en interurbano, con tres alternativas](docs/captura-ruta.jpg) | ![Paradas y líneas de las dos redes a menos de 250 m de Moncloa](docs/captura-cerca.jpg) |
 
-<p align="center"><img src="docs/captura-movil.jpg" alt="Captura en móvil" width="280"></p>
+<p align="center"><img src="docs/captura-movil.jpg" alt="Ruta de Móstoles a Príncipe Pío en móvil, combinando interurbanos y EMT" width="280"></p>
 
-> [**Powered by EMT de Madrid**](https://www.emtmadrid.es). Datos procesados a partir del GTFS oficial de la EMT (actualizado el 13/11/2026), sujetos a sus [condiciones de uso](https://mobilitylabs.emtmadrid.es/sip/terms-of-use). Esta web **no es una aplicación oficial de la EMT**.
+> [**Powered by EMT de Madrid**](https://www.emtmadrid.es). Datos procesados a partir del GTFS oficial de la EMT (actualizado el 13/11/2026), sujetos a sus [condiciones de uso](https://mobilitylabs.emtmadrid.es/sip/terms-of-use).
+>
+> [**Powered by CRTM**](https://www.crtm.es). Datos de interurbanos y urbanos procesados a partir del GTFS oficial del Consorcio Regional de Transportes de Madrid (actualizado el 05/11/2026, versión 28/10/2026), bajo su [licencia de uso](https://www.crtm.es/licencia-de-uso/).
+>
+> Esta web **no es una aplicación oficial de la EMT ni del CRTM**.
 
 ## Qué hace
 
-El panel tiene tres modos: **Líneas**, **Ruta** y **Cerca**.
+El panel tiene tres modos, **Líneas**, **Ruta** y **Cerca**, y sobre el mapa hay un selector de **Redes**.
+
+### Tres redes, cada una con su color
+
+| Red | Color de la etiqueta | Ejemplo |
+| --- | --- | --- |
+| EMT Madrid | azul | `27` |
+| Interurbanos (CRTM) | verde | `625` |
+| Urbanos de otros municipios (CRTM) | rojo, con el municipio | `Las Rozas · 1` |
+
+- La **etiqueta de cada línea lleva siempre el color de su red** y, en las urbanas, el nombre del municipio: la «1» de la EMT, la «1» de Móstoles y la «1» de Las Rozas no se confunden nunca. El **color que tú eliges** para pintar una línea en el mapa va aparte, en un punto junto a la etiqueta.
+- El selector **Redes** (arriba, sobre el mapa) hace de leyenda y decide qué redes se ven en el mapa **y cuáles entran en el cálculo de rutas**.
 
 ### Líneas
 
 - **Mapa a pantalla completa** (Leaflet + OpenStreetMap, sin API keys).
-- **Lista de líneas** con buscador por número o nombre (`C1`, `27`, `Circular`…), selección múltiple y un color por línea que puedes cambiar.
+- **Lista de líneas agrupada por red**, con filtros (Todas / EMT / Interurbanos / Urbanos) y buscador por número, nombre **o municipio** (`27`, `625`, `Circular`, `Móstoles`…). Selección múltiple y un color por línea que puedes cambiar.
 - Cada línea se dibuja **por sus calles reales**, con sus paradas. Puedes ver la ida, la vuelta o ambas.
 - Si varias líneas comparten calle **se dibujan en paralelo**, como en un plano de metro, en vez de taparse.
-- **Paradas**: aparecen al acercar el zoom. Al pulsar una ves su nombre, su código y las líneas que pasan, con botones para seleccionarlas todas o para usarla como origen o destino de una ruta.
-- **Transbordos**: con dos o más líneas seleccionadas se resaltan las paradas compartidas y las parejas de paradas de líneas distintas a menos de 250 m.
+- **Paradas**: aparecen al acercar el zoom. Al pulsar una ves su nombre, su código y las líneas que pasan, agrupadas por red, con botones para pintarlas o para usarla como origen o destino de una ruta. Los interurbanos que paran en un poste de la EMT aparecen en la misma parada.
+- **Transbordos**: con dos o más líneas seleccionadas (de la misma red o de redes distintas) se resaltan las paradas compartidas y las parejas de paradas de líneas distintas a menos de 250 m.
 - **Buscador de paradas** por nombre o código.
 
 ### Ruta
 
 - El **origen y el destino** pueden ser una parada (por nombre o código), una **calle, dirección o lugar** escrito a mano («Gran Vía 32», «IFEMA»), **tu ubicación** o un **punto tocado en el mapa**.
-- Calcula hasta **3 rutas que sean variantes de verdad**: no la misma con cambios mínimos, sino por líneas o calles distintas.
-- De cada ruta ves las líneas que hay que coger, la parada de subida y de bajada, los transbordos, los tramos a pie, la espera estimada y el **tiempo total**. Si varias líneas te sirven para un mismo tramo, te lo dice («coge la primera que pase»).
-- La ruta elegida se **dibuja en el mapa** con el color de cada línea; los marcadores de origen y destino se pueden arrastrar.
-- **Hora de salida**: por defecto «ahora», y se puede elegir otro día y hora (cambian las frecuencias, las líneas en servicio y los búhos).
+- Calcula hasta **3 rutas que sean variantes de verdad**, **combinando las redes activas**: por ejemplo, un interurbano hasta un intercambiador y allí un autobús de la EMT.
+- De cada ruta ves las líneas que hay que coger, la parada de subida y de bajada, los transbordos, los tramos a pie, la espera y el **tiempo total**. En los interurbanos y urbanos del CRTM la hora de salida es la **del horario oficial**; en la EMT, la espera se estima a partir de la frecuencia.
+- La ruta elegida se **dibuja en el mapa**; los marcadores de origen y destino se pueden arrastrar.
+- **Hora de salida**: por defecto «ahora», y se puede elegir otro día y hora (laborables, sábados y festivos tienen horarios distintos).
 - Si está cerca, también ofrece **ir andando**.
 
 ### Cerca
 
 - Eliges un punto (una dirección, tu ubicación o un toque en el mapa) y un **radio de 100 a 1000 m** con un deslizador.
-- Marca en el mapa las **paradas dentro del radio** y lista **todas sus líneas**, que puedes pintar una a una o todas a la vez.
+- Marca en el mapa las **paradas dentro del radio** y lista **todas sus líneas, agrupadas por red**, que puedes pintar una a una o todas a la vez.
 
 ### Además
 
-- **Enlace compartible**: las líneas, la ruta (origen, destino y hora), el punto de «Cerca» y la vista del mapa se guardan en la URL.
-- Funciona en **móvil**: el panel pasa a ser una hoja inferior plegable.
+- **Enlace compartible**: las líneas, las redes visibles, la ruta (origen, destino y hora), el punto de «Cerca» y la vista del mapa se guardan en la URL. Los enlaces de la v0.2 siguen funcionando.
+- Funciona en **móvil**: el panel es una hoja inferior con **tres alturas** (plegada, media pantalla y casi completa) que se cambia pulsando la cabecera o arrastrándola con el dedo.
 
 ## Ejecutarlo en local
 
@@ -65,38 +80,67 @@ python -m http.server 8000
 
 Y abre <http://localhost:8000>. Para probar algo rápido:
 
-- Líneas: <http://localhost:8000/#l=C1,C2,27,73>
-- Ruta: <http://localhost:8000/#t=ruta&o=40.4087,-3.6922,Atocha&d=40.4660,-3.6894,Plaza%20de%20Castilla>
-- Cerca: <http://localhost:8000/#t=cerca&c=40.4203,-3.7059,300,Callao>
+- Líneas de tres redes: <http://localhost:8000/#l=1,2,urb-las-rozas.1,urb-las-rozas.2,inter.625>
+- Ruta entre redes: <http://localhost:8000/#t=ruta&o=40.4929,-3.8737,Las%20Rozas&d=40.4349,-3.7195,Moncloa>
+- Cerca: <http://localhost:8000/#t=cerca&c=40.4349,-3.7195,300,Moncloa>
+
+## Identificadores de línea
+
+Cada línea tiene un identificador único entre todas las redes:
+
+| Identificador | Línea | En la URL |
+| --- | --- | --- |
+| `emt:27` | 27 de la EMT | `27` |
+| `inter:625` | interurbana 625 | `inter.625` |
+| `urb-colmenar-viejo:1` | 1 urbana de Colmenar Viejo | `urb-colmenar-viejo.1` |
+
+El municipio de las urbanas sale del código INE que el CRTM pone al final de su `route_id` (`9__1__045_` → 28**045**, Colmenar Viejo).
+
+## Cómo se cargan los datos (y cuánto pesan)
+
+El GTFS de interurbanos ocupa 330 MB descomprimido. La web lo recibe troceado y solo cuando hace falta:
+
+| Qué | Cuándo se descarga | Peso (comprimido con gzip) |
+| --- | --- | --- |
+| HTML, CSS y JavaScript | al abrir | 65 KB |
+| `index.json` de las tres redes (lista de líneas) | al abrir | 21 KB |
+| `stops.json` de cada red visible | en segundo plano, sin bloquear | 101 + 159 + 72 KB |
+| `lines/<línea>.json` (recorrido de una línea) | al seleccionarla | 1 a 5 KB por línea |
+| `routing.json` de cada red visible (horarios) | al abrir el modo Ruta | 132 + 233 + 44 KB |
+
+La web se puede usar en cuanto llegan los índices (unos 90 KB en total, más Leaflet desde su CDN). Si ocultas una red en «Redes», sus paradas y horarios no se descargan.
 
 ## Cómo se calculan las rutas
 
-Todo el cálculo se hace **en el navegador**, sin servidor. Las decisiones principales:
+Todo el cálculo se hace **en el navegador**, sin servidor.
 
-### Datos: horario comprimido en franjas
+### Horarios: frecuencias en la EMT, horario real en el CRTM
 
-El `stop_times.txt` de la EMT ocupa 100 MB (86.635 viajes), inviable para una web estática. Pero todos los viajes de una línea y sentido tienen el mismo perfil de tiempos entre paradas (solo cambia la duración total según la hora), y el propio GTFS trae en `frequencies.txt` la frecuencia de cada franja. Así que por cada **recorrido** (línea + sentido) se guarda:
+Por cada **recorrido** (línea + sentido + secuencia de paradas) se guarda la lista de paradas, el perfil de tiempos entre paradas y, por cada conjunto de fechas, sus **franjas**: primera salida, última salida, número de salidas y duración del recorrido.
 
-- la lista de paradas y el perfil de tiempos;
-- por cada tipo de día (laborable, viernes, sábado, festivo…), sus **franjas**: primera salida, última salida, número de salidas y duración del recorrido.
+- **EMT (red de frecuencia)**. Su `stop_times.txt` ocupa 100 MB (86.635 viajes), pero el GTFS trae en `frequencies.txt` la frecuencia de cada franja. Si pasan autobuses **cada 15 minutos o menos**, se cuenta **medio intervalo** de espera (un autobús urbano no cumple un horario al minuto); si pasan **cada más de 15 minutos** (búhos, líneas especiales), se espera a la **siguiente salida**.
+- **Interurbanos y urbanos del CRTM (redes de horario)**. Son líneas de poca frecuencia: suponer «medio intervalo» en una línea que pasa cada hora daría errores de media hora. Aquí las franjas guardan las **salidas reales sin pérdida**: una franja solo agrupa salidas con exactamente el mismo intervalo y la misma duración, así que de ella se recuperan las horas originales (primera + *k* × intervalo). las 35.000 salidas distintas de los interurbanos caben en 233 KB comprimidos.
 
-Eso son 397 KB (134 KB comprimido) en `data/emt/routing.json`, que solo se descarga al abrir el modo Ruta.
+### Calendario: laborables, sábados y festivos
 
-Al calcular una ruta, la espera depende de la franja:
+- Cada conjunto de fechas es una ristra de bits, un bit por día. Fuera del periodo de los datos se usa el día de la semana.
+- **EMT**: se lee el calendario del GTFS tal cual (con sus festivos).
+- **CRTM**: su calendario **no se puede leer al pie de la letra**. Muchos servicios dicen funcionar «todos los días» y mezclan los viajes de laborables, sábados y festivos (el tipo de día va escondido en el identificador del viaje); en otros, el horario de un lunes festivo queda como «todos los lunes del año». Tomado literalmente, un martes circularían a la vez los tres horarios. Por eso el script **clasifica cada viaje por su tipo de día** (laborable de lunes a viernes, sábado o festivo) y reconstruye el calendario. Está explicado en `scripts/build_data.py`.
+- **Festivos**: los que detalla el GTFS de una red valen para las demás cuando el suyo no dice nada de esa fecha (ese día se aplica su horario de domingo). Hoy los aporta el GTFS de la EMT.
 
-- si pasan autobuses **cada 15 minutos o menos**, se cuenta **medio intervalo** (un autobús urbano no cumple un horario al minuto);
-- si pasan **cada más de 15 minutos** (búhos, líneas especiales), se espera a la **siguiente salida**, como con un horario.
+### Tiempos de recorrido
+
+Los de la EMT salen del GTFS. En el del CRTM hay operadores sin horas de paso (un 11 % de los viajes) y otros con tiempos imposibles (Madrid – Alcalá de Henares en 12 minutos). El script lo detecta por la velocidad entre paradas y **estima esos tiempos** a partir de los viajes creíbles de la misma red; la web avisa en el paso a paso cuando la duración de un tramo es estimada.
 
 ### Algoritmo: RAPTOR
 
-[RAPTOR](https://www.microsoft.com/en-us/research/publication/round-based-public-transit-routing/) trabaja por rondas: en la ronda *k* calcula la llegada más temprana a cada parada usando como mucho *k* autobuses. Encaja bien con datos organizados por recorridos y es muy rápido: una consulta completa tarda unos 25 ms de media.
+[RAPTOR](https://www.microsoft.com/en-us/research/publication/round-based-public-transit-routing/) trabaja por rondas: en la ronda *k* calcula la llegada más temprana a cada parada usando como mucho *k* autobuses. Con las tres redes (12.700 paradas y 2.600 recorridos) una consulta tarda entre 10 y 300 ms.
 
-- **Transbordos a pie** entre paradas a menos de 300 m en línea recta, a 4,5 km/h y con un 25 % de rodeo. Se calculan en el navegador a partir de las coordenadas.
-- **Origen y destino**: se consideran todas las paradas a menos de 800 m de cada punto, y los tramos a pie del principio y del final cuentan en el tiempo total.
-- **Variantes**: como es tan rápido, se lanza varias veces vetando las líneas de la mejor ruta encontrada. De todas las candidatas se eligen las de menor coste (tiempo, más 5 min por transbordo, más un recargo por andar) descartando las que pasan por las mismas paradas que otra ya elegida.
-- **Calendario**: la fecha elegida decide qué tipo de día se aplica, incluidos los festivos del GTFS. Los búhos, que en el GTFS salen «a las 24:00 y pico» del día anterior, se tienen en cuenta.
+- **Transbordos a pie** entre paradas a menos de 300 m en línea recta, a 4,5 km/h y con un 25 % de rodeo. Se calculan a partir de las coordenadas, así que los transbordos **entre redes** (de un interurbano a la EMT en un intercambiador) no necesitan nada especial.
+- **Origen y destino**: se consideran todas las paradas a menos de 800 m de cada punto.
+- **Variantes**: se lanza varias veces vetando las líneas de la mejor ruta encontrada, y de todas las candidatas se eligen las de menor coste (tiempo, más 5 min por transbordo, más un recargo por andar) descartando las que pasan por las mismas paradas que otra ya elegida.
 
-Está explicado con más detalle en los comentarios de `js/router.js`. Para comprobarlo con trayectos reales:
+Está explicado con más detalle en los comentarios de `js/router.js`. Para comprobarlo con trayectos reales (también entre redes y en sábado, domingo y festivo):
 
 ```bash
 node tests/router.test.mjs --verbose
@@ -109,59 +153,66 @@ Tampoco hay servidor propio para esto. Se evaluaron tres servicios gratuitos:
 | Servicio | Decisión | Por qué |
 | --- | --- | --- |
 | [Photon](https://photon.komoot.io) (komoot, datos de OpenStreetMap) | **Principal** | Permite buscar mientras se escribe y encuentra calles, portales y lugares (IFEMA, estaciones, hospitales). Es un servidor público de «uso justo»: se le pregunta con pausa entre teclas, a partir de 3 letras, con caché y cancelando lo que ya no hace falta. |
-| [CartoCiudad](https://www.cartociudad.es) (Instituto Geográfico Nacional) | **Respaldo** si Photon falla | Oficial y muy bueno con calles y portales, pero no conoce lugares por su nombre («IFEMA» o «Avenida de América» no devuelven nada). |
+| [CartoCiudad](https://www.cartociudad.es) (Instituto Geográfico Nacional) | **Respaldo** si Photon falla | Oficial y muy bueno con calles y portales, pero no conoce lugares por su nombre. |
 | [Nominatim](https://nominatim.org) (OpenStreetMap) | Descartado | Su [política de uso](https://operations.osmfoundation.org/policies/nominatim/) prohíbe el autocompletado y limita a 1 petición por segundo. |
 
 Todas las búsquedas se limitan a la **Comunidad de Madrid**.
 
-### Preparado para más redes
-
-Los datos van «una carpeta por red» y el buscador de rutas une todas las redes que se le pasen: los recorridos se concatenan y los transbordos a pie salen de las coordenadas, así que los transbordos **entre redes** no necesitan nada especial. El formato de franjas también vale para horarios puros (un viaje suelto es una franja de una sola salida).
-
-Para añadir los **interurbanos del CRTM** habrá que generar `data/crtm/` con el mismo script (`--input`, `--output`, `--network-id`, `--network-name`), registrar la red en `NETWORKS` (`js/config.js`) y hacer que `js/app.js` cargue las paradas y las líneas de más de una red, que hoy solo carga la EMT.
-
 ## Actualizar los datos
 
-Los datos que usa la web están en `data/emt/` y se generan a partir del GTFS oficial con un script de Python (solo librería estándar, Python 3.9 o superior).
+Los datos de la web están en `data/emt/`, `data/inter/` y `data/urb/` y se generan a partir de los GTFS oficiales con un script de Python (solo librería estándar, Python 3.9 o superior). Los ZIP originales se guardan en `data/raw/`, que está en `.gitignore`: **no se suben al repositorio**.
 
-1. Descarga el GTFS de la EMT desde el [portal de datos abiertos del Ayuntamiento de Madrid](https://datos.madrid.es) (busca «EMT GTFS»).
-2. Guárdalo como `data/raw/gtfs_emt.zip`. Esa carpeta está en `.gitignore`: el ZIP original **no** se sube al repositorio.
-3. Ejecuta el script desde la raíz del repo:
+| Red | ZIP que hay que dejar en `data/raw/` | De dónde sale | Comando |
+| --- | --- | --- | --- |
+| EMT | `gtfs_emt.zip` | [Portal de datos abiertos del Ayuntamiento de Madrid](https://datos.madrid.es) (busca «EMT GTFS») | `python scripts/build_data.py emt` |
+| Interurbanos | `gtfs_interurbanos.zip` | [Datos abiertos del CRTM](https://datos.crtm.es): GTFS de «Autobuses interurbanos» (`google_transit_M89`) | `python scripts/build_data.py inter` |
+| Urbanos de otros municipios | `gtfs_urbanos.zip` | [Datos abiertos del CRTM](https://datos.crtm.es): GTFS de «Autobuses urbanos» (`google_transit_M9`) | `python scripts/build_data.py urb` |
+
+Cada red se puede actualizar por separado. Los pasos son siempre los mismos:
+
+1. Descarga el GTFS y guárdalo en `data/raw/` con el nombre de la tabla (da igual que los ficheros vengan dentro de una carpeta en el ZIP).
+2. Ejecuta el script desde la raíz del repo. Sin argumentos procesa las tres redes (tarda alrededor de un minuto):
 
    ```bash
    python scripts/build_data.py
    ```
 
-4. Revisa el resumen que imprime (número de líneas, paradas, recorridos y franjas, avisos), pasa la prueba de rutas (`node tests/router.test.mjs`) y prueba la web en local.
-5. Sube los cambios de `data/emt/` con un commit. La fecha que se muestra en la web se actualiza sola; acuérdate de cambiarla también en la cita de este README.
+3. Revisa el resumen que imprime: número de líneas y paradas, salidas por tipo de día, viajes con tiempos estimados y avisos (por ejemplo, las líneas que el GTFS trae sin viajes).
+4. Pasa la prueba de rutas y prueba la web en local:
 
-Tarda unos 15 segundos. Opciones útiles (`python scripts/build_data.py --help`):
+   ```bash
+   node tests/router.test.mjs
+   ```
+
+5. Sube los cambios de `data/<red>/` con un commit. La fecha que se muestra en la web se actualiza sola; acuérdate de cambiarla también en la cita de este README.
+
+Opciones (`python scripts/build_data.py --help`):
 
 | Opción | Para qué sirve |
 | --- | --- |
-| `--input RUTA` | Usar otro ZIP en vez de `data/raw/gtfs_emt.zip` |
-| `--output CARPETA` | Escribir en otra carpeta en vez de `data/emt` |
-| `--network-id ID`, `--network-name NOMBRE` | Identificar otra red (por ejemplo `crtm`) |
-| `--tolerance METROS` | Simplificación de la geometría (por defecto 2 m) |
+| `emt`, `inter`, `urb` | Redes a procesar (por defecto, todas las que tengan su ZIP) |
+| `--input RUTA` | Usar otro ZIP (solo con una red) |
+| `--output CARPETA` | Escribir en otra carpeta (solo con una red) |
+| `--tolerance METROS` | Simplificación de la geometría (por defecto 2 m en la EMT, 4 m en interurbanos y 3 m en urbanos) |
 | `--date AAAA-MM-DD` | Fecha de actualización del GTFS (por defecto, la de los ficheros del ZIP) |
 
 ### Formato de los datos generados
 
 ```
-data/emt/
-├── index.json        metadatos del feed y lista de líneas
-├── stops.json        todas las paradas, cada una con las líneas que pasan
-├── lines/<id>.json   un fichero por línea (se carga solo al seleccionarla)
-└── routing.json      datos del buscador de rutas (se carga al abrir el modo Ruta)
+data/<red>/
+├── index.json           metadatos del feed y lista de líneas
+├── stops.json           paradas de la red, cada una con las líneas que pasan
+├── lines/<línea>.json   un fichero por línea (se carga solo al seleccionarla)
+└── routing.json         horarios (se carga al abrir el modo Ruta)
 ```
 
-- **`index.json`** → `feed.date` (fecha del GTFS) y `lines`: `id`, `name` (número), `long` (nombre largo) y, por sentido, cabecera y número de paradas.
-- **`stops.json`** → cada parada es `[id, código, nombre, lat, lon, [ids de línea]]`.
-- **`lines/<id>.json`** → por cada sentido (`dir` 0 = ida, 1 = vuelta): `shape` (geometría simplificada, en formato [*encoded polyline*](https://developers.google.com/maps/documentation/utilities/polylinealgorithm) de precisión 5), `stops` (paradas en orden), `dist` (metros acumulados) y `time` (segundos acumulados desde la primera parada). Con `shape` y `dist` se recorta el tramo de calle que se dibuja en cada ruta.
-- **`routing.json`** →
-  - `services`: tipos de día (`days` de lunes a domingo, `from`, `to`) y `exceptions` (`[fecha, servicio, 1 = añadido | 2 = quitado]`);
-  - `scheduleHeadway`: intervalo (s) a partir del cual una franja se trata como horario;
-  - `patterns`: un recorrido por línea y sentido, con `line`, `dir`, `stops` (posiciones en `stops.json`), `time` (segundos acumulados) y `bands`: por servicio, una lista plana `[primera salida, última salida, nº de salidas, duración, …]` en segundos desde las 0:00 del día de servicio (pueden pasar de 24 h).
+- **`index.json`** → `feed.date` (fecha del GTFS) y `lines`: `id` (identificador único), `name` (número), `muni` (municipio, en las urbanas), `long` (nombre largo) y, por sentido, cabecera y número de paradas. Las líneas que el GTFS trae sin viajes llevan `nodata: true`.
+- **`stops.json`** → cada parada es `[id, código, nombre, lat, lon, [líneas]]`, con las líneas como posiciones en `index.json`.
+- **`lines/<línea>.json`** → por cada sentido (`dir` 0 = ida, 1 = vuelta), su recorrido principal: `shape` (geometría simplificada, en formato [*encoded polyline*](https://developers.google.com/maps/documentation/utilities/polylinealgorithm) de precisión 5), `stops` (paradas en orden), `dist` (metros acumulados) y `time` (segundos acumulados). El nombre del fichero sale del identificador: `27.json`, `625.json`, `colmenar-viejo_1.json`.
+- **`routing.json`** (versión 2) →
+  - `exact`: `true` si las franjas son horario real (CRTM), `false` si son frecuencias (EMT);
+  - `calendar`: `start` y `days` (ventana de fechas), `sets` (conjuntos de fechas en hexadecimal: el carácter *k* lleva los días 4*k* a 4*k*+3), `week` (días de la semana habituales de cada conjunto, para fechas fuera de la ventana), `holidays` y `detailTo` (hasta qué fecha detalla festivos el GTFS);
+  - `patterns`: un recorrido por línea, sentido y secuencia de paradas, con `line` y `stops` (posiciones en `index.json` y `stops.json`), `time` (segundos acumulados), `est` (tiempos estimados) y `bands`: por cada conjunto de fechas, una lista plana `[primera salida, última salida, nº de salidas, duración, …]` en segundos desde las 0:00 del día de servicio (pueden pasar de 24 h).
 
 ## Desplegarlo en GitHub Pages
 
@@ -179,22 +230,26 @@ Todas las rutas del proyecto son relativas, así que funciona igual en una subca
 ```
 index.html             página única
 css/style.css          estilos
-js/app.js              lógica principal: datos, mapa, modo Líneas y cambio de modo
+js/app.js              lógica principal: mapa, modo Líneas, redes visibles y cambio de modo
+js/data.js             datos de las redes: identificadores, carga por partes, unión de paradas
 js/planner.js          modo Ruta: formulario, lista de rutas y dibujo en el mapa
 js/router.js           buscador de rutas (RAPTOR); no toca el DOM
 js/nearby.js           modo Cerca: paradas y líneas dentro de un radio
 js/places.js           selector de lugar: paradas, direcciones, ubicación, punto del mapa
 js/geocode.js          búsqueda de direcciones (Photon y CartoCiudad)
+js/sheet.js            panel plegable y hoja inferior de tres alturas en móvil
 js/offset.js           dibujo de líneas en paralelo
 js/transfers.js        transbordos entre las líneas seleccionadas
 js/urlstate.js         estado en la URL
 js/geo.js              utilidades (polilíneas, distancias, rejilla de cercanía, texto)
 js/dom.js              utilidades de interfaz
-js/config.js           configuración (colores, zooms, redes, parámetros de rutas)
-scripts/build_data.py  preprocesado del GTFS
+js/config.js           configuración (redes y sus colores, zooms, parámetros de rutas)
+scripts/build_data.py  preprocesado de los GTFS de las tres redes
 tests/router.test.mjs  prueba del buscador de rutas con trayectos reales
-data/emt/              datos procesados (sí se suben al repo)
-data/raw/              GTFS original (no se sube)
+data/emt/              datos procesados de la EMT (sí se suben al repo)
+data/inter/            datos procesados de los interurbanos del CRTM
+data/urb/              datos procesados de los urbanos de otros municipios
+data/raw/              GTFS originales (no se suben)
 ```
 
 Es JavaScript sin dependencias ni *bundler* (módulos ES). Leaflet se carga desde un CDN.
@@ -205,40 +260,53 @@ Cada recorrido se desplaza unos píxeles hacia la **derecha de su sentido de mar
 
 ## Limitaciones conocidas
 
+De los datos del CRTM:
+
+- El GTFS del CRTM (versión del 28/10/2026) **trae algunas líneas sin viajes, paradas ni trazado**: las interurbanas 720 a 728, N702, N908 y 635 y las urbanas 1 y 2 de Colmenar Viejo, 3A de Getafe, SE de Valdemoro e I1 de Algete. La web las lista como «sin datos» y no las puede pintar ni usar en las rutas; por eso, por ejemplo, de Colmenar Viejo a Plaza de Castilla solo sale un rodeo por la línea 610. Se arreglará solo cuando el CRTM publique esos viajes y se regeneren los datos.
+- El calendario del CRTM se **reconstruye** por tipo de día (ver arriba): no recoge fiestas locales ni horarios especiales (verano, vísperas…), que el GTFS marca con códigos que no explica y que se descartan.
+- Parte de los **tiempos de recorrido** del CRTM son estimaciones (el GTFS no los trae, o trae valores imposibles); la web lo indica en el tramo afectado.
+- De cada línea se dibuja el **recorrido principal** de cada sentido. Los interurbanos tienen muchas variantes (1.270 además de las principales): se usan todas al calcular rutas, pero un tramo que va por una variante se dibuja siguiendo el recorrido principal donde coinciden y en línea recta donde no.
+- No se tienen en cuenta las **restricciones de subida y bajada** de algunos interurbanos dentro de Madrid (el GTFS no las trae).
+
 Del buscador de rutas:
 
-- Los tiempos son **estimaciones** a partir de los horarios y frecuencias oficiales del GTFS: no hay tráfico ni tiempo real.
+- Los tiempos salen de los horarios y frecuencias oficiales: no hay tráfico ni tiempo real.
 - Las distancias a pie son **en línea recta** con un factor de rodeo, no el recorrido real por las calles.
-- Solo conoce los **autobuses de la EMT**: no combina con metro, cercanías ni interurbanos.
+- Solo conoce los **autobuses**: no combina con metro ni cercanías.
+- Los festivos de las redes del CRTM dependen de los que detalle el GTFS de la EMT, que hoy llega hasta el 25/12/2026.
 - Las tres rutas no siempre son igual de buenas: si solo hay uno o dos caminos razonables, la tercera puede ser claramente peor, o no salir.
-- De madrugada, o con líneas de poco servicio, la mejor ruta puede incluir **esperas largas**; se avisa.
 - No se puede seguir en el autobús al pasar por la cabecera de una línea (afecta a las circulares).
-- La búsqueda de direcciones depende de un servidor público (Photon) sin garantía de disponibilidad; si falla se usa CartoCiudad, que no encuentra lugares por su nombre.
+- La búsqueda de direcciones depende de un servidor público (Photon) sin garantía de disponibilidad.
 
 Del mapa de líneas:
 
-- La distancia de los transbordos es **en línea recta**.
-- La pestaña de transbordos no mira horarios: que dos líneas compartan parada no significa que funcionen a la vez (por ejemplo, una diurna y una nocturna).
+- La distancia de los transbordos es **en línea recta**, y la pestaña de transbordos no mira horarios.
 - En el mapa no se indica con flechas el sentido de cada recorrido (se puede filtrar por ida o vuelta en el panel).
 - Con muchas líneas por la misma calle, el «haz» de líneas en paralelo se hace ancho.
-- Si una línea tiene variantes de recorrido, se dibuja solo la más frecuente (en el GTFS actual ninguna las tiene).
-- El mapa base usa los servidores públicos de teselas de OpenStreetMap, pensados para un uso moderado. Si la web tuviera mucho tráfico habría que cambiar de proveedor.
+- El mapa base usa los servidores públicos de teselas de OpenStreetMap, pensados para un uso moderado.
 
-Ideas para más adelante: capa e itinerarios con los interurbanos del CRTM, flechas de sentido, recorrido a pie por las calles.
+## Datos, créditos y licencias
 
-## Datos y créditos
-
-- **Datos de transporte**: [Powered by EMT de Madrid](https://www.emtmadrid.es). Son datos procesados a partir del GTFS oficial de la Empresa Municipal de Transportes de Madrid (versión del 13/11/2026), publicados en el portal de datos abiertos del Ayuntamiento de Madrid y sujetos a sus [condiciones de uso](https://mobilitylabs.emtmadrid.es/sip/terms-of-use). El procesado (simplificación de geometrías, índice de paradas, franjas de frecuencia) y las rutas y tiempos calculados son de este proyecto, y cualquier error que haya introducido también.
+- **EMT**: [Powered by EMT de Madrid](https://www.emtmadrid.es). Datos procesados a partir del GTFS oficial de la Empresa Municipal de Transportes de Madrid (versión del 13/11/2026), publicados en el portal de datos abiertos del Ayuntamiento de Madrid y sujetos a sus [condiciones de uso](https://mobilitylabs.emtmadrid.es/sip/terms-of-use).
+- **Interurbanos y urbanos de otros municipios**: [Powered by CRTM](https://www.crtm.es). Datos procesados a partir del GTFS oficial del Consorcio Regional de Transportes de Madrid (ficheros del 05/11/2026, versión del feed 28/10/2026), bajo su [licencia de uso](https://www.crtm.es/licencia-de-uso/).
+- El procesado (simplificación de geometrías, índice de paradas, compresión de horarios, reconstrucción del calendario, estimación de tiempos) y las rutas calculadas son de este proyecto, y cualquier error que haya introducido también.
 - **Mapa base**: © [colaboradores de OpenStreetMap](https://www.openstreetmap.org/copyright).
 - **Búsqueda de direcciones**: [Photon](https://photon.komoot.io), de komoot, con datos © colaboradores de OpenStreetMap ([ODbL](https://opendatacommons.org/licenses/odbl/)). De respaldo, [CartoCiudad](https://www.cartociudad.es) © Instituto Geográfico Nacional ([CC BY 4.0](https://creativecommons.org/licenses/by/4.0/deed.es), scne.es).
 - **Librería de mapas**: [Leaflet](https://leafletjs.com).
 
-Este proyecto es personal, sin ánimo de lucro, y **no está afiliado a la EMT ni respaldado por ella**. No usa sus logotipos. Para información oficial y en tiempo real, usa los canales de la EMT.
+Este proyecto es personal, sin ánimo de lucro, y **no está afiliado a la EMT ni al CRTM ni respaldado por ellos**. No usa sus logotipos. Para información oficial y en tiempo real, usa sus canales.
+
+### Licencia
+
+El **código** se publica bajo licencia [MIT](LICENSE). Los **datos** no:
+
+| Carpeta | Deriva de | Se rige por |
+| --- | --- | --- |
+| `data/inter/` y `data/urb/` | GTFS del CRTM | La [licencia de uso del CRTM](https://www.crtm.es/licencia-de-uso/), que exige citar la fuente y **compartir los datos derivados bajo el mismo tipo de licencia**: estos ficheros procesados se distribuyen bajo esa misma licencia, no bajo la MIT. |
+| `data/emt/` | GTFS de la EMT | Las [condiciones de uso de la EMT](https://mobilitylabs.emtmadrid.es/sip/terms-of-use). |
+
+Si reutilizas el repositorio, puedes usar el código con las condiciones de la MIT, pero para los datos tienes que respetar la licencia de cada fuente (o regenerarlos tú con el script a partir de los GTFS oficiales).
 
 ## Desarrollado con Claude Fable 5.2
 
 Este proyecto se ha desarrollado con **Claude Fable 5.2**, el modelo de Anthropic, usando [Claude Code](https://claude.com/claude-code). A partir de una descripción de lo que quería (funcionalidades, restricciones técnicas y requisitos legales), el modelo planificó el trabajo, escribió el script de preprocesado y la web, la probó en un navegador con capturas de pantalla y fue corrigiendo los fallos. Yo he revisado el resultado y decidido qué se publica.
-
-## Licencia
-
-El código se publica bajo licencia [MIT](LICENSE). Los datos de `data/emt/` derivan del GTFS de la EMT y se rigen por sus condiciones de uso, enlazadas arriba.

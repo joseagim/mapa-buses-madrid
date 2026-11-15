@@ -2,7 +2,7 @@
 // ubicación o un toque en el mapa) y las líneas que pasan por ellas.
 /* global L */
 
-import { NEARBY, ROUTING } from './config.js';
+import { NEARBY, NETWORKS, ROUTING } from './config.js';
 import { $, h, isMobile, formatMinutes, formatMeters } from './dom.js';
 import { PointGrid } from './geo.js';
 import { createPlaceInput, mapPlace } from './places.js';
@@ -13,8 +13,11 @@ const BLUE = '#0b5cad';
 const WALK_S_PER_M = (ROUTING.walkDetour * 3.6) / ROUTING.walkSpeedKmh;
 
 export function initNearby(ctx) {
-  const { map, data } = ctx;
-  const grid = new PointGrid(data.stops, 300);
+  const { map } = ctx;
+  // Rejilla de cercanía sobre las paradas de las redes visibles. Se rehace
+  // cuando llegan paradas de otra red o cambian las redes visibles (onData).
+  let grid = null;
+  const getGrid = () => (grid ??= new PointGrid(ctx.visibleStops(), 300));
 
   const st = {
     active: false,
@@ -36,8 +39,8 @@ export function initNearby(ctx) {
     placeholder: 'Calle, lugar o parada',
     marker: '',
     markerClass: 'c',
-    stops: () => data.stops,
-    lineNames: ctx.lineNames,
+    stops: () => ctx.visibleStops(),
+    lineNames: ctx.lineMinis,
     near: () => { const c = map.getCenter(); return { lat: c.lat, lon: c.lng }; },
     onChange: (place) => setCenter(place, { fit: true, fromInput: true }),
     onPickOnMap: () => {
@@ -89,9 +92,10 @@ export function initNearby(ctx) {
 
   function refresh({ fit }) {
     if (st.center) {
-      st.hits = grid.within(st.center.lat, st.center.lon, st.radius);
-      const ids = new Set(st.hits.flatMap((hit) => hit.point.lines));
-      st.lines = data.lines.filter((line) => ids.has(line.id)); // en el orden natural de la lista
+      st.hits = getGrid().within(st.center.lat, st.center.lon, st.radius);
+      const lines = new Map();
+      for (const hit of st.hits) for (const line of ctx.stopLines(hit.point)) lines.set(line.id, line);
+      st.lines = [...lines.values()].sort((a, b) => a.order - b.order); // en el orden de la lista: red a red
     } else {
       st.hits = [];
       st.lines = [];
@@ -112,7 +116,7 @@ export function initNearby(ctx) {
     }
     const nStops = st.hits.length;
     if (!nStops) {
-      resultsBox.append(h('p', { class: 'notice', text: `No hay paradas de la EMT a menos de ${formatMeters(st.radius)} de este punto. Prueba a ampliar el radio.` }));
+      resultsBox.append(h('p', { class: 'notice', text: `No hay paradas a menos de ${formatMeters(st.radius)} de este punto en las redes visibles. Prueba a ampliar el radio.` }));
       return;
     }
     const nLines = st.lines.length;
@@ -137,7 +141,13 @@ export function initNearby(ctx) {
           }) : null,
         ),
       ),
-      h('div', { class: 'chips near-chips' }, st.lines.map(ctx.lineChip)),
+      // Agrupadas por red, cada una con su nombre y su color
+      NETWORKS.map((net) => {
+        const own = st.lines.filter((line) => line.net === net.id);
+        return own.length ? h('div', { class: 'sp-net' },
+          h('div', { class: `sp-net-name net-text-${net.id}`, text: `${net.name} (${own.length})` }),
+          h('div', { class: 'chips near-chips' }, own.map(ctx.lineChip))) : null;
+      }),
       h('p', { class: 'hint-small', text: 'Pulsa una línea para pintarla en el mapa o quitarla.' }),
       h('h2', { class: 'section-title', text: 'Paradas, de la más cercana a la más lejana' }),
     );
@@ -150,7 +160,7 @@ export function initNearby(ctx) {
           h('span', { class: 'stop-text' },
             h('span', { class: 'stop-name', text: stop.name }),
             h('span', { class: 'stop-dist', text: `a ${formatMeters(hit.dist)} · ${formatMinutes(hit.dist * WALK_S_PER_M)} a pie` }),
-            h('span', { class: 'stop-lines', text: ctx.lineNames(stop) }),
+            h('span', { class: 'stop-lines' }, ctx.lineMinis(stop)),
           ),
         )));
     }
@@ -208,6 +218,12 @@ export function initNearby(ctx) {
     /** Han cambiado las líneas pintadas: hay que actualizar sus chips. */
     onSelection() {
       if (st.center) renderResults();
+    },
+
+    /** Han llegado paradas de otra red o han cambiado las redes visibles. */
+    onData() {
+      grid = null;
+      if (st.center) refresh({ fit: false });
     },
 
     activate() {

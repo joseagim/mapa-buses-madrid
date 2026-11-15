@@ -3,8 +3,8 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
-  <title>Mapa de buses de Madrid (EMT) · no oficial</title>
-  <meta name="description" content="Mapa interactivo no oficial de los autobuses de la EMT de Madrid: pinta líneas en el mapa, descubre dónde hacer transbordo, calcula rutas entre dos puntos y mira qué paradas tienes cerca.">
+  <title>Mapa de buses de Madrid (EMT, interurbanos y urbanos) · no oficial</title>
+  <meta name="description" content="Mapa interactivo no oficial de los autobuses de Madrid (EMT, interurbanos y urbanos de otros municipios): pinta líneas en el mapa, descubre dónde hacer transbordo, calcula rutas entre dos puntos y mira qué paradas tienes cerca.">
   <meta name="theme-color" content="#0b5cad">
   <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='7' fill='%230b5cad'/%3E%3Cpath d='M6 22 L13 10 L19 18 L26 8' fill='none' stroke='white' stroke-width='3.2' stroke-linecap='round' stroke-linejoin='round'/%3E%3Ccircle cx='13' cy='10' r='2.6' fill='%23ffd60a'/%3E%3C/svg%3E">
 
@@ -15,13 +15,16 @@
 <body>
   <div id="map" aria-label="Mapa de Madrid"></div>
 
+  <!-- Redes visibles en el mapa y en las rutas (hace también de leyenda de colores) -->
+  <div id="nets" role="group" aria-label="Redes visibles en el mapa y en el cálculo de rutas"></div>
+
   <aside id="panel" data-sheet="half" aria-label="Panel de líneas, rutas y paradas">
     <header id="panel-head">
       <button id="panel-toggle" type="button" aria-label="Mostrar u ocultar el panel" aria-expanded="true">
         <span class="grip" aria-hidden="true"></span>
         <span class="brand">
           <strong>Buses de Madrid</strong>
-          <small>Líneas y rutas EMT · no oficial</small>
+          <small>EMT, interurbanos y urbanos · no oficial</small>
         </span>
         <span id="summary" class="summary"></span>
         <span class="chevron" aria-hidden="true"></span>
@@ -45,8 +48,9 @@
 
         <section id="tab-lines" class="tab" role="tabpanel">
           <div class="search">
-            <input id="line-search" type="search" placeholder="Buscar línea: C1, 27, Circular…" autocomplete="off" aria-label="Buscar línea por número o nombre">
+            <input id="line-search" type="search" placeholder="Buscar línea: 27, 625, Móstoles…" autocomplete="off" aria-label="Buscar línea por número, nombre o municipio">
           </div>
+          <div id="line-filter" class="filters" role="group" aria-label="Filtrar la lista por red"></div>
           <div class="scroll">
             <div id="selected-box"></div>
             <h2 id="line-list-title" class="section-title">Todas las líneas</h2>
@@ -84,12 +88,20 @@
         <details>
           <summary>
             <a href="https://www.emtmadrid.es" target="_blank" rel="noopener"><strong>Powered by EMT de Madrid</strong></a>
-            · web no oficial · <span class="more">créditos</span>
+            · <a href="https://www.crtm.es" target="_blank" rel="noopener"><strong>Powered by CRTM</strong></a>
+            · no oficial · <span class="more">créditos</span>
           </summary>
           <p>
-            Datos procesados a partir del GTFS oficial de la EMT<span id="feed-date"></span>.
-            <a href="https://mobilitylabs.emtmadrid.es/sip/terms-of-use" target="_blank" rel="noopener">Condiciones de uso</a>.
-            Las rutas y los tiempos son estimaciones propias a partir de esos datos.
+            <strong>EMT:</strong> datos procesados a partir del GTFS oficial de la EMT de Madrid<span id="feed-date-emt"></span>,
+            sujetos a sus <a href="https://mobilitylabs.emtmadrid.es/sip/terms-of-use" target="_blank" rel="noopener">condiciones de uso</a>.
+          </p>
+          <p>
+            <strong>Interurbanos y urbanos de otros municipios:</strong> datos procesados a partir del GTFS oficial del
+            <a href="https://www.crtm.es" target="_blank" rel="noopener">Consorcio Regional de Transportes de Madrid (CRTM)</a><span id="feed-date-crtm"></span>,
+            bajo su <a href="https://www.crtm.es/licencia-de-uso/" target="_blank" rel="noopener">licencia de uso</a>.
+          </p>
+          <p>
+            Las rutas y los tiempos son cálculos propios a partir de esos datos, no información oficial ni en tiempo real.
           </p>
           <p>
             Mapa © <a href="https://www.openstreetmap.org/copyright" target="_blank" rel="noopener">colaboradores de OpenStreetMap</a>.
@@ -98,8 +110,8 @@
             (<a href="https://creativecommons.org/licenses/by/4.0/deed.es" target="_blank" rel="noopener">CC BY 4.0</a>, scne.es).
           </p>
           <p>
-            Esta web <strong>no es una aplicación oficial de la EMT</strong>.
-            <a href="https://github.com/joseagim/mapa-buses-madrid" target="_blank" rel="noopener">Código en GitHub</a> (MIT).
+            Esta web <strong>no es una aplicación oficial de la EMT ni del CRTM</strong>.
+            <a href="https://github.com/joseagim/mapa-buses-madrid" target="_blank" rel="noopener">Código en GitHub</a> (MIT; los datos, bajo las licencias de sus titulares).
           </p>
         </details>
       </footer>

@@ -1,38 +1,36 @@
 // Mapa de buses de Madrid: lógica principal (datos, mapa y panel).
 /* global L */
 
-import { NETWORK, HOME, PALETTE, ZOOM, TRANSFER_RADIUS_M, EXAMPLE_LINES } from './config.js';
-import { decodePolyline, metersPerPixel, normalizeText, textColorFor } from './geo.js';
+import { NETWORKS, HOME, PALETTE, ZOOM, TRANSFER_RADIUS_M, EXAMPLE_LINES } from './config.js';
+import { decodePolyline, metersPerPixel, normalizeText } from './geo.js';
 import { buildTrack, computeLanes, lanesToOffsets, offsetPath } from './offset.js';
 import { computeTransfers } from './transfers.js';
 import { parseHash, buildHash } from './urlstate.js';
 import { $, h, isMobile, debounce, toast } from './dom.js';
 import { searchStops, stopPlace } from './places.js';
+import { createStore, loadIndex, loadStops, fetchJson, lineUrlPath, lineToUrl } from './data.js';
+import { setupSheet, setSheet, setPanelCollapsed, sheetHeights } from './sheet.js';
 import { initPlanner } from './planner.js';
 import { initNearby } from './nearby.js';
 
 const NAVY = '#0b2545';
 const DIR_LABEL = { 0: 'Ida', 1: 'Vuelta' };
+const NET_BY_ID = new Map(NETWORKS.map((net) => [net.id, net]));
 
 // ---------------------------------------------------------------------------
 // Estado
 // ---------------------------------------------------------------------------
 
-/** Datos cargados de data/<red>/ */
-const data = {
-  feed: null,
-  lines: [],              // [{id, name, long, dirs, search}]
-  lineById: new Map(),
-  lineByName: new Map(),  // nombre corto en mayúsculas -> línea
-  stops: [],              // [{id, code, name, lat, lon, lines:[id], search}]
-  stopById: new Map(),
-  lineFiles: new Map(),   // id -> Promise con el fichero de la línea ya preparado
-};
+/** Datos cargados de data/<red>/ (ver js/data.js). */
+const data = createStore();
+data.lineFiles = new Map();   // id de línea -> Promise con su fichero ya preparado
 
 /** Lo que ha elegido el usuario. */
 const state = {
   mode: 'lines',          // 'lines' | 'route' | 'nearby'
   selected: [],           // [{id, color, dir}]  dir: 'b' ambos, 'i' ida, 'v' vuelta
+  nets: new Set(NETWORKS.map((net) => net.id)), // redes visibles en el mapa y en las rutas
+  lineFilter: 'all',      // red que se enseña en la lista de líneas ('all' = todas)
   showTransfers: true,
   openStop: null,         // parada con el popup abierto
 };
@@ -53,9 +51,9 @@ let current = {
 
 const map = L.map('map', {
   zoomControl: false,
-  minZoom: 10,
+  minZoom: 9,
   maxZoom: 19,
-  maxBounds: [[39.6, -4.9], [41.3, -2.7]],
+  maxBounds: [[39.4, -5.2], [41.5, -2.4]],
 }).setView(HOME.center, HOME.zoom);
 
 L.control.zoom({ position: 'topright', zoomInTitle: 'Acercar', zoomOutTitle: 'Alejar' }).addTo(map);
@@ -68,6 +66,8 @@ L.tileLayer('https://tile.openstreetmap.org/{z}/{x}/{y}.png', {
   attribution:
     '<a href="https://www.emtmadrid.es" target="_blank" rel="noopener">Powered by EMT de Madrid</a>'
     + ' (<a href="https://mobilitylabs.emtmadrid.es/sip/terms-of-use" target="_blank" rel="noopener">condiciones</a>)'
+    + ' · <a href="https://www.crtm.es" target="_blank" rel="noopener">Powered by CRTM</a>'
+    + ' (<a href="https://www.crtm.es/licencia-de-uso/" target="_blank" rel="noopener">licencia</a>)'
     + ' · © <a href="https://www.openstreetmap.org/copyright" target="_blank" rel="noopener">colaboradores de OpenStreetMap</a>',
 }).addTo(map);
 
@@ -94,7 +94,7 @@ const routeGroup = L.layerGroup().addTo(map);
 const linkGroup = L.layerGroup().addTo(map);
 const stopGroup = L.layerGroup().addTo(map);
 
-const popup = L.popup({ maxWidth: 300, minWidth: 240, autoPanPadding: [16, 16] });
+const popup = L.popup({ maxWidth: 310, minWidth: 250, autoPanPadding: [16, 16] });
 map.on('popupclose', (e) => {
   if (e.popup === popup) state.openStop = null;
 });
@@ -107,49 +107,93 @@ function viewPadding() {
     // Con la hoja casi a pantalla completa no queda mapa a la vista: se
     // encuadra como si estuviera a media altura, que es a donde volverá.
     const covered = collapsed ? $('#panel-head').offsetHeight : Math.min(panel.offsetHeight, sheetHeights().half);
-    return { paddingTopLeft: [24, 24], paddingBottomRight: [24, covered + 24] };
+    return { paddingTopLeft: [24, 56], paddingBottomRight: [24, covered + 24] };
   }
   const left = collapsed ? 24 : panel.offsetWidth + 36;
-  return { paddingTopLeft: [left, 24], paddingBottomRight: [56, 36] };
+  return { paddingTopLeft: [left, 56], paddingBottomRight: [56, 36] };
 }
 
 // ---------------------------------------------------------------------------
-// Carga de datos
+// Redes y carga de datos
 // ---------------------------------------------------------------------------
 
-async function fetchJson(path) {
-  const response = await fetch(path);
-  if (!response.ok) throw new Error(`${path}: HTTP ${response.status}`);
-  return response.json();
-}
+const netEnabled = (id) => state.nets.has(id);
+const enabledNets = () => NETWORKS.filter((net) => state.nets.has(net.id)).map((net) => net.id);
 
-async function loadBaseData() {
-  const [index, stopsFile] = await Promise.all([
-    fetchJson(`${NETWORK.path}/index.json`),
-    fetchJson(`${NETWORK.path}/stops.json`),
-  ]);
-  data.feed = index.feed;
-  data.lines = index.lines.map((line) => ({
-    ...line,
-    nameNorm: normalizeText(line.name),
-    search: normalizeText([line.name, line.long, ...line.dirs.map((d) => d.headsign)].join(' ')),
-  }));
-  for (const line of data.lines) {
-    data.lineById.set(line.id, line);
-    data.lineByName.set(line.name.toUpperCase(), line);
+/** Líneas (objetos) de una parada que son de las redes visibles, en el orden de la lista. */
+function stopLines(stop) {
+  const lines = [];
+  for (const id of stop.lines) {
+    const line = data.lineById.get(id);
+    if (line && state.nets.has(line.net)) lines.push(line);
   }
-  data.stops = stopsFile.stops.map(([id, code, name, lat, lon, lines]) => ({
-    net: NETWORK.id, id, code, name, lat, lon, lines,
-    nameNorm: normalizeText(name),
-    search: normalizeText(`${code} ${name}`),
-  }));
-  for (const stop of data.stops) data.stopById.set(stop.id, stop);
+  return lines.sort((a, b) => a.order - b.order);
+}
+
+let visibleCache = { key: null, stops: [] };
+
+/** Paradas con alguna línea de las redes visibles. */
+function visibleStops() {
+  const key = `${data.stopsVersion}|${enabledNets().join(',')}`;
+  if (visibleCache.key !== key) {
+    const all = state.nets.size === NETWORKS.length;
+    visibleCache = {
+      key,
+      stops: all ? data.stops : data.stops.filter((stop) => (
+        stop.lines.some((id) => state.nets.has(data.lineById.get(id)?.net)))),
+    };
+  }
+  return visibleCache.stops;
+}
+
+let knownStopsVersion = 0;
+
+/** Hay que llamarla cuando llegan las paradas de una red: actualiza lo que dependa de ellas. */
+function stopsArrived() {
+  if (knownStopsVersion === data.stopsVersion) return;
+  knownStopsVersion = data.stopsVersion;
+  drawStops();
+  renderStopResults();
+  modes.nearby?.onData();
+  // El popup abierto puede ganar líneas de la red recién cargada: se rehace
+  // (aquí no hay ningún clic en curso, así que es seguro: ver stopPopupContent).
+  if (state.openStop && map.hasLayer(popup)) popup.setContent(stopPopupContent(state.openStop));
+}
+
+/** Carga las paradas de una red (una sola vez) y avisa cuando llegan. */
+function ensureStops(netId) {
+  return loadStops(data, netId).then((stops) => {
+    stopsArrived();
+    return stops;
+  });
+}
+
+/** Carga en segundo plano las paradas de las redes visibles que falten. */
+function loadMissingStops() {
+  for (const id of enabledNets()) {
+    ensureStops(id).catch((error) => {
+      console.error(error);
+      toast(`No se han podido cargar las paradas de ${NET_BY_ID.get(id).name}.`);
+    });
+  }
+}
+
+/**
+ * Carga inicial, lo mínimo para poder usar la web: la lista de líneas de las
+ * tres redes (ficheros pequeños) y las paradas de la EMT. Las paradas de las
+ * otras redes llegan después, en segundo plano, y los recorridos y horarios
+ * solo cuando hacen falta.
+ */
+async function loadBaseData() {
+  await Promise.all(NETWORKS.map((net) => loadIndex(data, net.id)));
+  data.lines.forEach((line, order) => { line.order = order; });
 }
 
 /** Carga (una sola vez) el fichero de una línea y prepara su geometría. */
 function loadLine(id) {
   if (!data.lineFiles.has(id)) {
-    const promise = fetchJson(`${NETWORK.path}/lines/${id}.json`).then((file) => {
+    const line = data.lineById.get(id);
+    const promise = Promise.all([fetchJson(lineUrlPath(data, id)), ensureStops(line.net)]).then(([file]) => {
       for (const dir of file.dirs) {
         dir.track = buildTrack(decodePolyline(dir.shape));
         dir.stopObjs = dir.stops.map((stopId) => data.stopById.get(stopId)).filter(Boolean);
@@ -162,12 +206,41 @@ function loadLine(id) {
   return data.lineFiles.get(id);
 }
 
+/** Activa o desactiva una red en el mapa y en el cálculo de rutas. */
+function setNetEnabled(id, on) {
+  if (on === state.nets.has(id)) return;
+  if (!on && state.nets.size === 1) {
+    toast('Tiene que quedar al menos una red visible.');
+    return;
+  }
+  if (on) state.nets.add(id);
+  else state.nets.delete(id);
+  if (state.lineFilter !== 'all' && !state.nets.has(state.lineFilter)) state.lineFilter = 'all';
+  renderNets();
+  renderLineFilter();
+  renderSelected();
+  renderLineList();
+  renderStopResults();
+  renderSummary();
+  updateUrl();
+  loadMissingStops();
+  if (state.openStop && map.hasLayer(popup)) {
+    if (stopLines(state.openStop).length) popup.setContent(stopPopupContent(state.openStop));
+    else map.closePopup(popup);
+  }
+  modes.nearby?.onData();
+  modes.route?.onNets();
+  syncMap();
+}
+
 // ---------------------------------------------------------------------------
 // Selección de líneas
 // ---------------------------------------------------------------------------
 
 const isSelected = (id) => state.selected.some((s) => s.id === id);
 const selectionOf = (id) => state.selected.find((s) => s.id === id);
+/** Líneas seleccionadas de las redes visibles: las que se pintan. */
+const shownSelection = () => state.selected.filter((s) => state.nets.has(data.lineById.get(s.id).net));
 
 function nextColor() {
   const used = new Set(state.selected.map((s) => s.color));
@@ -177,7 +250,8 @@ function nextColor() {
 function addLines(ids) {
   const added = [];
   for (const id of ids) {
-    if (!data.lineById.has(id) || isSelected(id)) continue;
+    const line = data.lineById.get(id);
+    if (!line || line.nodata || isSelected(id)) continue;
     state.selected.push({ id, color: nextColor(), dir: 'b' });
     added.push(id);
   }
@@ -239,7 +313,7 @@ async function syncMap() {
   const ticket = ++syncCounter;
   // En el modo Ruta el mapa es para el itinerario: las líneas elegidas se
   // guardan, pero no se pintan hasta volver a Líneas o Cerca.
-  const shown = state.mode === 'route' ? [] : state.selected;
+  const shown = state.mode === 'route' ? [] : shownSelection();
   let files;
   try {
     files = await Promise.all(shown.map((s) => loadLine(s.id)));
@@ -340,22 +414,36 @@ function addStopMarker(stop, style) {
   }).on('click', () => openStop(stop)).addTo(stopGroup);
 }
 
+/** Color del borde de una parada suelta: el de su red (o neutro si es de varias). */
+function stopColor(stop) {
+  let net = null;
+  for (const line of stopLines(stop)) {
+    if (net && net !== line.net) return '#5d7186';
+    net = line.net;
+  }
+  return net ? NET_BY_ID.get(net).soft : '#7c98b6';
+}
+
 /** Dibuja las paradas visibles y los puntos de transbordo. */
 function drawStops() {
   stopGroup.clearLayers();
   linkGroup.clearLayers();
   const zoom = map.getZoom();
   const bounds = map.getBounds().pad(0.3);
-  const inView = (s) => bounds.contains([s.lat, s.lon]);
+  const south = bounds.getSouth();
+  const north = bounds.getNorth();
+  const west = bounds.getWest();
+  const east = bounds.getEast();
+  const inView = (s) => s.lat >= south && s.lat <= north && s.lon >= west && s.lon <= east;
   const base = zoom <= 12 ? 2.5 : zoom === 13 ? 3 : zoom === 14 ? 3.5 : zoom === 15 ? 4.5 : 5.5;
   const showTransfers = state.showTransfers && zoom >= ZOOM.transfers && current.transfers.length > 0;
   const highlighted = (id) => showTransfers && (current.shared.has(id) || current.near.has(id));
 
-  // 1) Resto de paradas de la red (solo con mucho zoom)
+  // 1) Resto de paradas de las redes visibles (solo con mucho zoom)
   if (zoom >= ZOOM.allStops) {
-    for (const stop of data.stops) {
-      if (current.stopInfo.has(stop.id) || !inView(stop)) continue;
-      addStopMarker(stop, { radius: base - 1, color: '#7c98b6', weight: 1.5, fillColor: '#fff' });
+    for (const stop of visibleStops()) {
+      if (!inView(stop) || current.stopInfo.has(stop.id)) continue;
+      addStopMarker(stop, { radius: base - 1, color: stopColor(stop), weight: 1.5, fillColor: '#fff' });
     }
   }
 
@@ -410,28 +498,61 @@ map.on('moveend', () => {
 });
 
 // ---------------------------------------------------------------------------
-// Paradas: popup y buscador
+// Etiquetas de línea
 // ---------------------------------------------------------------------------
+//
+// La etiqueta de una línea lleva SIEMPRE el color de su red (azul EMT, verde
+// interurbanos, rojo urbanos de otros municipios) y, en las urbanas, el
+// municipio: «Colmenar Viejo · 1». El color que el usuario ha elegido para
+// pintarla en el mapa va aparte, en un punto a la izquierda.
+
+/** Punto con el color elegido por el usuario (hueco si la línea no está pintada). */
+function swatch(color) {
+  return h('i', { class: `swatch${color ? '' : ' empty'}`, style: color ? `background:${color}` : null, 'aria-hidden': 'true' });
+}
+
+/**
+ * Etiqueta de una línea.
+ * @param {string|null} color  color elegido por el usuario; si se pasa, se añade el punto
+ */
+function badge(line, color = null) {
+  const label = h('span', { class: `badge net-${line.net}${line.nodata ? ' nodata' : ''}`, text: line.label });
+  return color ? h('span', { class: 'tag' }, swatch(color), label) : label;
+}
+
+/** Etiquetas pequeñas de las líneas de una parada (para listas de paradas). */
+function lineMinis(stop, max = 16) {
+  const lines = stopLines(stop);
+  const out = lines.slice(0, max).map((line) => h('span', { class: `mini net-${line.net}`, text: line.label }));
+  if (lines.length > max) out.push(h('span', { class: 'mini more', text: `+${lines.length - max}` }));
+  return out;
+}
+
+const lineTitle = (line) => `${NET_BY_ID.get(line.net).name} · ${line.label} · ${line.long}`;
 
 /** Pone un chip de línea al día (seleccionada o no) sin sustituirlo por otro. */
 function updateChip(chip, line) {
   const sel = selectionOf(line.id);
+  const dot = chip.firstChild;
   chip.classList.toggle('on', Boolean(sel));
-  chip.style.cssText = sel ? `background:${sel.color};color:${textColorFor(sel.color)}` : '';
-  chip.title = `${line.name} · ${line.long}` + (sel ? ' (pulsa para quitarla)' : ' (pulsa para seleccionarla)');
+  dot.classList.toggle('empty', !sel);
+  dot.style.background = sel ? sel.color : '';
+  chip.style.setProperty('--c', sel ? sel.color : 'transparent');
+  chip.title = lineTitle(line) + (sel ? ' (pulsa para quitarla)' : ' (pulsa para pintarla en el mapa)');
   chip.setAttribute('aria-pressed', sel ? 'true' : 'false');
 }
 
+/** Botón para pintar o quitar una línea: su etiqueta con el punto de color delante. */
 function lineChip(line) {
-  const chip = h('button', {
-    type: 'button',
-    class: 'badge chip',
-    onclick: () => toggleLine(line.id),
-    text: line.name,
-  });
+  const chip = h('button', { type: 'button', class: 'chip', onclick: () => toggleLine(line.id) },
+    swatch(null), badge(line));
   updateChip(chip, line);
   return chip;
 }
+
+// ---------------------------------------------------------------------------
+// Paradas: popup y buscador
+// ---------------------------------------------------------------------------
 
 /**
  * Contenido del popup de una parada. Devuelve el elemento con un método
@@ -446,7 +567,7 @@ function lineChip(line) {
  * redibujado llega más tarde y no coincide con el clic).
  */
 function stopPopupContent(stop) {
-  const lines = stop.lines.map((id) => data.lineById.get(id)).filter(Boolean);
+  const lines = stopLines(stop);
   const chips = lines.map((line) => [lineChip(line), line]);
   const missing = () => lines.filter((l) => !isSelected(l.id));
   const selectAll = h('button', {
@@ -454,11 +575,19 @@ function stopPopupContent(stop) {
     class: 'btn primary',
     onclick: () => addLines(missing().map((l) => l.id)),
   });
+  // Agrupadas por red, cada grupo con su nombre
+  const groups = [];
+  for (const net of NETWORKS) {
+    const own = chips.filter(([, line]) => line.net === net.id);
+    if (!own.length) continue;
+    groups.push(h('div', { class: 'sp-net' },
+      h('div', { class: `sp-net-name net-text-${net.id}`, text: net.name }),
+      h('div', { class: 'chips' }, own.map(([chip]) => chip))));
+  }
   const root = h('div', { class: 'stop-popup' },
     h('div', { class: 'sp-name', text: stop.name }),
-    h('div', { class: 'sp-code', text: `Parada nº ${stop.code}` }),
-    h('div', { class: 'sp-label', text: lines.length === 1 ? 'Pasa 1 línea:' : `Pasan ${lines.length} líneas:` }),
-    h('div', { class: 'chips' }, chips.map(([chip]) => chip)),
+    h('div', { class: 'sp-code', text: `Parada nº ${stop.code} · ${lines.length === 1 ? 'pasa 1 línea' : `pasan ${lines.length} líneas`}` }),
+    h('div', { class: 'sp-groups' }, groups),
     selectAll,
     h('div', { class: 'sp-route' },
       h('button', { type: 'button', class: 'btn small', onclick: () => routeFromPopup('from', stopPlace(stop)), text: 'Salir de aquí' }),
@@ -470,10 +599,10 @@ function stopPopupContent(stop) {
     const left = missing().length;
     selectAll.disabled = left === 0;
     selectAll.textContent = left === 0
-      ? 'Todas seleccionadas ✓'
-      : lines.length === 1 ? 'Seleccionar esta línea'
-        : left === lines.length ? `Seleccionar las ${lines.length} líneas`
-          : left === 1 ? 'Seleccionar la que falta' : `Seleccionar las ${left} que faltan`;
+      ? 'Todas pintadas ✓'
+      : lines.length === 1 ? 'Pintar esta línea'
+        : left === lines.length ? `Pintar las ${lines.length} líneas`
+          : left === 1 ? 'Pintar la que falta' : `Pintar las ${left} que faltan`;
   };
   root.update();
   return root;
@@ -489,7 +618,7 @@ function routeFromPopup(which, place) {
 function openStop(stop) {
   // que el popup no quede debajo del panel
   const padding = viewPadding();
-  popup.options.autoPanPaddingTopLeft = L.point(isMobile() ? [12, 12] : [padding.paddingTopLeft[0] - 12, 12]);
+  popup.options.autoPanPaddingTopLeft = L.point(isMobile() ? [12, 56] : [padding.paddingTopLeft[0] - 12, 56]);
   popup.options.autoPanPaddingBottomRight = L.point(isMobile() ? [12, padding.paddingBottomRight[1] - 12] : [56, 28]);
   popup.setLatLng([stop.lat, stop.lon]).setContent(stopPopupContent(stop)).openOn(map);
   state.openStop = stop;
@@ -520,11 +649,11 @@ function renderStopResults() {
   const text = $('#stop-search').value;
   list.replaceChildren();
   if (normalizeText(text).length < 2) {
-    list.append(h('li', { class: 'empty', text: 'Escribe al menos 2 caracteres: un nombre («Cibeles», «Atocha») o el código de la parada.' }));
+    list.append(h('li', { class: 'empty', text: 'Escribe al menos 2 caracteres: un nombre («Cibeles», «Intercambiador») o el código de la parada.' }));
     return;
   }
   const MAX = 60;
-  const { matches, total } = searchStops(data.stops, text, MAX);
+  const { matches, total } = searchStops(visibleStops(), text, MAX);
   if (!matches.length) {
     list.append(h('li', { class: 'empty', text: 'No hay paradas que coincidan.' }));
     return;
@@ -535,7 +664,7 @@ function renderStopResults() {
         h('span', { class: 'stop-code', text: stop.code }),
         h('span', { class: 'stop-text' },
           h('span', { class: 'stop-name', text: stop.name }),
-          h('span', { class: 'stop-lines', text: lineNames(stop) }),
+          h('span', { class: 'stop-lines' }, lineMinis(stop)),
         ),
       ),
     ));
@@ -545,29 +674,35 @@ function renderStopResults() {
   }
 }
 
-/** «C1 · 27 · 73»: nombres de las líneas de una parada. */
-function lineNames(stop) {
-  return stop.lines.map((id) => data.lineById.get(id)?.name).filter(Boolean).join(' · ');
+// ---------------------------------------------------------------------------
+// Panel: redes visibles (hace también de leyenda de colores)
+// ---------------------------------------------------------------------------
+
+function renderNets() {
+  const box = $('#nets');
+  box.replaceChildren(h('span', { class: 'nets-title', text: 'Redes' }));
+  for (const net of NETWORKS) {
+    const on = state.nets.has(net.id);
+    box.append(h('button', {
+      type: 'button', class: `net-toggle net-${net.id}${on ? ' on' : ''}`, 'aria-pressed': String(on),
+      title: `${net.name}: ${on ? 'visible en el mapa y en las rutas (pulsa para ocultarla)' : 'oculta (pulsa para mostrarla)'}`,
+      onclick: () => setNetEnabled(net.id, !on),
+    }, h('i', { 'aria-hidden': 'true' }), net.short));
+  }
 }
 
 // ---------------------------------------------------------------------------
 // Panel: líneas
 // ---------------------------------------------------------------------------
 
-function badge(line, color) {
-  return h('span', {
-    class: 'badge',
-    style: color ? `background:${color};color:${textColorFor(color)}` : null,
-    text: line.name,
-  });
-}
-
 function searchLines(text) {
   const query = normalizeText(text);
-  if (!query) return data.lines;
+  const pool = data.lines.filter((line) => (
+    state.nets.has(line.net) && (state.lineFilter === 'all' || line.net === state.lineFilter)));
+  if (!query) return pool;
   const tokens = query.split(/\s+/);
   const scored = [];
-  for (const line of data.lines) {
+  for (const line of pool) {
     if (!tokens.every((t) => line.search.includes(t))) continue;
     const score = line.nameNorm === query ? 0 : line.nameNorm.startsWith(query) ? 1 : line.nameNorm.includes(query) ? 2 : 3;
     scored.push([score, line]);
@@ -576,39 +711,79 @@ function searchLines(text) {
   return scored.map(([, line]) => line);
 }
 
+/** Filtros de la lista de líneas por red. */
+function renderLineFilter() {
+  const box = $('#line-filter');
+  box.replaceChildren();
+  const options = [{ id: 'all', short: 'Todas' }, ...NETWORKS.filter((net) => state.nets.has(net.id))];
+  if (options.length <= 2) return; // con una sola red visible no hay nada que filtrar
+  for (const option of options) {
+    const on = state.lineFilter === option.id;
+    box.append(h('button', {
+      type: 'button', class: `filter${option.id === 'all' ? '' : ` net-${option.id}`}${on ? ' on' : ''}`, 'aria-pressed': String(on),
+      onclick: () => {
+        state.lineFilter = option.id;
+        renderLineFilter();
+        renderLineList();
+      },
+      text: option.short,
+    }));
+  }
+}
+
+function lineRow(line) {
+  if (line.nodata) {
+    return h('li', {},
+      h('div', { class: 'line-row disabled', title: 'El GTFS publicado por el CRTM no trae el recorrido ni los horarios de esta línea' },
+        badge(line),
+        h('span', { class: 'line-long', text: line.long }),
+        h('span', { class: 'no-data', text: 'sin datos' }),
+      ));
+  }
+  const sel = selectionOf(line.id);
+  return h('li', {},
+    h('button', {
+      type: 'button',
+      class: 'line-row' + (sel ? ' on' : ''),
+      'aria-pressed': sel ? 'true' : 'false',
+      title: lineTitle(line),
+      onclick: () => toggleLine(line.id),
+    },
+    badge(line, sel?.color),
+    h('span', { class: 'line-long', text: line.long }),
+    h('span', { class: 'check', 'aria-hidden': 'true', text: sel ? '✓' : '+' }),
+    ),
+  );
+}
+
 function renderLineList() {
   const list = $('#line-list');
   const query = $('#line-search').value;
   const lines = searchLines(query);
   $('#line-list-title').textContent = query.trim()
     ? `Resultados (${lines.length})`
-    : `Todas las líneas (${lines.length})`;
+    : state.lineFilter === 'all' ? `Todas las líneas (${lines.length})` : `Líneas (${lines.length})`;
   list.replaceChildren();
   if (!lines.length) {
-    list.append(h('li', { class: 'empty', text: 'No hay líneas que coincidan.' }));
+    list.append(h('li', { class: 'empty', text: 'No hay líneas que coincidan. Puedes buscar por número, por nombre o por municipio («Alcalá», «Móstoles»).' }));
     return;
   }
-  for (const line of lines) {
-    const sel = selectionOf(line.id);
-    list.append(h('li', {},
-      h('button', {
-        type: 'button',
-        class: 'line-row' + (sel ? ' on' : ''),
-        'aria-pressed': sel ? 'true' : 'false',
-        onclick: () => toggleLine(line.id),
-      },
-      badge(line, sel?.color),
-      h('span', { class: 'line-long', text: line.long }),
-      h('span', { class: 'check', 'aria-hidden': 'true', text: sel ? '✓' : '+' }),
-      ),
-    ));
+  // Agrupadas por red; dentro de cada red, en el orden de la búsqueda
+  for (const net of NETWORKS) {
+    const own = lines.filter((line) => line.net === net.id);
+    if (!own.length) continue;
+    list.append(h('li', { class: `net-head net-text-${net.id}` },
+      h('i', { class: `net-dot net-${net.id}`, 'aria-hidden': 'true' }),
+      h('span', { text: net.name }),
+      h('small', { text: String(own.length) })));
+    for (const line of own) list.append(lineRow(line));
   }
 }
 
 function directionSelect(sel, line) {
   const select = h('select', {
     class: 'dir-select',
-    'aria-label': `Sentido de la línea ${line.name}`,
+    'aria-label': `Sentido de la línea ${line.label}`,
     onchange: (e) => {
       sel.dir = e.target.value;
       selectionEdited();
@@ -627,13 +802,14 @@ function renderSelected() {
   const box = $('#selected-box');
   box.replaceChildren();
   if (!state.selected.length) {
+    const examples = EXAMPLE_LINES.map((id) => data.lineById.get(id)).filter(Boolean);
     box.append(h('div', { class: 'hint' },
       h('p', { text: 'Elige líneas en la lista para verlas en el mapa. Con dos o más verás dónde se cruzan para hacer transbordo.' }),
-      h('button', {
+      examples.length ? h('button', {
         type: 'button', class: 'btn',
-        onclick: () => addLines(EXAMPLE_LINES.map((n) => data.lineByName.get(n)?.id).filter(Boolean)),
-        text: `Probar con ${EXAMPLE_LINES.join(', ')}`,
-      }),
+        onclick: () => addLines(examples.map((line) => line.id)),
+        text: `Probar con ${examples.map((line) => line.name).join(', ')}`,
+      }) : null,
     ));
     return;
   }
@@ -644,33 +820,33 @@ function renderSelected() {
   const list = h('ul', { class: 'selected-list' });
   for (const sel of state.selected) {
     const line = data.lineById.get(sel.id);
-    const lineBadge = badge(line, sel.color);
+    const hidden = !state.nets.has(line.net);
     const color = h('input', {
       type: 'color', class: 'color', value: sel.color,
-      title: 'Cambiar color', 'aria-label': `Color de la línea ${line.name}`,
+      title: 'Color con el que se pinta en el mapa (pulsa para cambiarlo)', 'aria-label': `Color de la línea ${line.label}`,
       oninput: (e) => {
         sel.color = e.target.value.toLowerCase();
-        lineBadge.style.background = sel.color;
-        lineBadge.style.color = textColorFor(sel.color);
         selectionEditedSoon();
       },
     });
-    list.append(h('li', { class: 'selected-row' },
+    list.append(h('li', { class: `selected-row${hidden ? ' off' : ''}` },
       color,
       h('div', { class: 'selected-main' },
-        h('div', { class: 'selected-name' }, lineBadge, h('span', { class: 'line-long', text: line.long })),
-        directionSelect(sel, line),
+        h('div', { class: 'selected-name' }, badge(line), h('span', { class: 'line-long', title: line.long, text: line.long })),
+        hidden
+          ? h('div', { class: 'selected-note', text: `Red oculta: actívala en «Redes» para verla.` })
+          : directionSelect(sel, line),
       ),
       h('button', {
         type: 'button', class: 'icon', title: 'Centrar el mapa en la línea',
-        'aria-label': `Centrar el mapa en la línea ${line.name}`,
+        'aria-label': `Centrar el mapa en la línea ${line.label}`, disabled: hidden,
         onclick: () => {
           if (isMobile()) setPanelCollapsed(true);
           fitToLines([sel.id], false);
         },
       }, h('span', { class: 'ico-target', 'aria-hidden': 'true' })),
       h('button', {
-        type: 'button', class: 'icon', title: 'Quitar línea', 'aria-label': `Quitar la línea ${line.name}`,
+        type: 'button', class: 'icon', title: 'Quitar línea', 'aria-label': `Quitar la línea ${line.label}`,
         onclick: () => removeLine(sel.id), text: '×',
       }),
     ));
@@ -685,7 +861,7 @@ function renderSummary() {
   const box = $('#summary');
   box.replaceChildren();
   if (state.mode === 'lines') {
-    for (const sel of state.selected) box.append(badge(data.lineById.get(sel.id), sel.color));
+    for (const sel of shownSelection()) box.append(badge(data.lineById.get(sel.id), sel.color));
   } else {
     box.append(...modes[state.mode].summary());
   }
@@ -706,12 +882,13 @@ function renderTransfers() {
   const box = $('#transfers-box');
   const counter = $('#transfer-count');
   box.replaceChildren();
+  const shown = shownSelection();
   const total = current.shared.size + current.links.length;
-  counter.hidden = state.selected.length < 2;
+  counter.hidden = shown.length < 2;
   counter.textContent = total;
 
-  if (state.selected.length < 2) {
-    box.append(h('p', { class: 'empty', text: 'Selecciona dos o más líneas para ver dónde puedes hacer transbordo entre ellas.' }));
+  if (shown.length < 2) {
+    box.append(h('p', { class: 'empty', text: 'Selecciona dos o más líneas (de la misma red o de redes distintas) para ver dónde puedes hacer transbordo entre ellas.' }));
     return;
   }
 
@@ -773,100 +950,8 @@ function renderTransfers() {
 }
 
 // ---------------------------------------------------------------------------
-// Panel: pestañas y plegado
+// Panel: pestañas y modos
 // ---------------------------------------------------------------------------
-
-// En móvil el panel es una hoja inferior con tres alturas: plegada (solo la
-// cabecera), media pantalla y casi pantalla completa. Se cambia pulsando la
-// cabecera o arrastrándola con el dedo. En escritorio solo hay plegado o no.
-const SHEET_STATES = ['collapsed', 'half', 'full'];
-
-const sheetState = () => $('#panel').dataset.sheet || 'half';
-
-/** Alto en píxeles de cada estado de la hoja (los mismos valores que en el CSS). */
-function sheetHeights() {
-  const vh = window.innerHeight;
-  return { collapsed: $('#panel-head').offsetHeight, half: Math.round(vh * 0.5), full: Math.round(vh * 0.9) };
-}
-
-function setSheet(next) {
-  const panel = $('#panel');
-  panel.dataset.sheet = next;
-  panel.classList.toggle('collapsed', next === 'collapsed');
-  panel.style.height = '';
-  $('#panel-toggle').setAttribute('aria-expanded', String(next !== 'collapsed'));
-}
-
-/** Pliega el panel o, si estaba plegado, lo abre (en móvil, a media pantalla). */
-function setPanelCollapsed(collapsed) {
-  if (collapsed) setSheet('collapsed');
-  else if (sheetState() === 'collapsed') setSheet('half');
-}
-
-function setupSheet() {
-  const panel = $('#panel');
-  const handle = $('#panel-toggle');
-  let drag = null;
-  let dragged = false; // el clic que sigue a un arrastre no cuenta como pulsación
-
-  handle.addEventListener('click', () => {
-    if (dragged) return;
-    const now = sheetState();
-    if (isMobile()) setSheet(SHEET_STATES[(SHEET_STATES.indexOf(now) + 1) % SHEET_STATES.length]);
-    else setSheet(now === 'collapsed' ? 'half' : 'collapsed');
-  });
-
-  handle.addEventListener('pointerdown', (e) => {
-    if (!isMobile() || (e.pointerType === 'mouse' && e.button !== 0)) return;
-    dragged = false;
-    // Con ratón no hay captura implícita: sin esto, al salir el cursor de la
-    // cabecera dejarían de llegar los movimientos.
-    try { handle.setPointerCapture(e.pointerId); } catch { /* puntero ya soltado */ }
-    drag = {
-      id: e.pointerId, y0: e.clientY, h0: panel.getBoundingClientRect().height,
-      moved: false, lastY: e.clientY, lastT: e.timeStamp, speed: 0,
-    };
-  });
-  handle.addEventListener('pointermove', (e) => {
-    if (!drag || e.pointerId !== drag.id) return;
-    const dy = e.clientY - drag.y0;
-    if (!drag.moved) {
-      if (Math.abs(dy) < 8) return; // todavía puede ser una pulsación
-      drag.moved = true;
-      panel.classList.add('dragging');
-      panel.classList.remove('collapsed'); // que se vea el contenido mientras sube
-    }
-    const dt = e.timeStamp - drag.lastT;
-    if (dt > 0) drag.speed = 0.7 * ((e.clientY - drag.lastY) / dt) + 0.3 * drag.speed; // px/ms, hacia abajo
-    drag.lastY = e.clientY;
-    drag.lastT = e.timeStamp;
-    const { collapsed, full } = sheetHeights();
-    panel.style.height = `${Math.max(collapsed, Math.min(full + 16, drag.h0 - dy))}px`;
-  });
-  const end = (e) => {
-    if (!drag || e.pointerId !== drag.id) return;
-    const { moved } = drag;
-    const speed = e.timeStamp - drag.lastT > 120 ? 0 : drag.speed; // parado antes de soltar
-    drag = null;
-    if (!moved) return;
-    dragged = true;
-    setTimeout(() => { dragged = false; }, 400);
-    panel.classList.remove('dragging');
-    // Al soltar: si el dedo iba rápido (un «empujón»), a la siguiente altura
-    // en ese sentido; si no, a la más cercana a donde se ha dejado.
-    const height = panel.getBoundingClientRect().height;
-    const heights = sheetHeights();
-    let options = SHEET_STATES;
-    if (Math.abs(speed) > 0.45) {
-      const flick = SHEET_STATES.filter((st) => (speed < 0 ? heights[st] > height : heights[st] < height));
-      if (flick.length) options = flick;
-    }
-    setSheet(options.reduce((a, b) => (
-      Math.abs(heights[b] - height) < Math.abs(heights[a] - height) ? b : a)));
-  };
-  handle.addEventListener('pointerup', end);
-  handle.addEventListener('pointercancel', end);
-}
 
 function showTab(name) {
   for (const button of document.querySelectorAll('.tabs [data-tab]')) {
@@ -915,7 +1000,7 @@ function setupPanel() {
   $('#line-search').addEventListener('keydown', (e) => {
     // Enter selecciona el primer resultado
     if (e.key !== 'Enter' || !e.target.value.trim()) return;
-    const [first] = searchLines(e.target.value);
+    const first = searchLines(e.target.value).find((line) => !line.nodata);
     if (first && !isSelected(first.id)) addLines([first.id]);
   });
   $('#stop-search').addEventListener('input', debounce(renderStopResults, 120));
@@ -939,8 +1024,9 @@ const updateUrl = debounce(() => {
   const center = map.getCenter();
   const params = { ...modes.route?.urlParams(), ...modes.nearby?.urlParams() };
   if (state.mode !== 'lines') params.t = MODE_TO_URL[state.mode];
+  if (state.nets.size < NETWORKS.length) params.n = enabledNets().join(',');
   const hash = buildHash(
-    state.selected.map((s) => ({ name: data.lineById.get(s.id).name, color: s.color, dir: s.dir })),
+    state.selected.map((s) => ({ name: lineToUrl(s.id), color: s.color, dir: s.dir })),
     { zoom: map.getZoom(), lat: center.lat, lng: center.lng },
     params,
   );
@@ -951,13 +1037,20 @@ const updateUrl = debounce(() => {
 /** Aplica el estado de la URL. Devuelve true si la URL traía una vista de mapa. */
 function applyHash() {
   const parsed = parseHash(location.hash);
+  // n = redes visibles (si falta, todas)
+  const wanted = (parsed.params.n || '').split(',').filter((id) => NET_BY_ID.has(id));
+  state.nets = new Set(wanted.length ? wanted : NETWORKS.map((net) => net.id));
+  if (state.lineFilter !== 'all' && !state.nets.has(state.lineFilter)) state.lineFilter = 'all';
   state.selected = [];
   for (const item of parsed.lines) {
-    const line = data.lineByName.get(item.name.toUpperCase());
-    if (!line || isSelected(line.id)) continue;
+    // «27» es la 27 de la EMT (como en los enlaces de la v0.2); «inter.625», la interurbana 625
+    const line = data.lineByUrl.get(item.name.toUpperCase());
+    if (!line || line.nodata || isSelected(line.id)) continue;
     state.selected.push({ id: line.id, color: item.color || nextColor(), dir: item.dir });
   }
   if (parsed.view) map.setView([parsed.view.lat, parsed.view.lng], parsed.view.zoom, { animate: false });
+  renderNets();
+  renderLineFilter();
   modes.route.applyParams(parsed.params, Boolean(parsed.view));
   modes.nearby.applyParams(parsed.params, Boolean(parsed.view));
   setMode(URL_TO_MODE[parsed.params.t] || 'lines');
@@ -967,6 +1060,8 @@ function applyHash() {
 window.addEventListener('hashchange', () => {
   if (location.hash === lastHash) return; // el cambio lo hemos hecho nosotros
   const hadView = applyHash();
+  loadMissingStops();
+  renderStopResults();
   selectionChanged({ fitAll: !hadView });
 });
 
@@ -982,13 +1077,24 @@ function setupModes() {
     map, data, state,
     renderers: { casing: casingRenderer, routes: routeRenderer, journey: journeyRenderer },
     loadLine, selectionOf, isSelected, toggleLine, addLines, removeLines,
-    lineChip, badge, lineNames,
+    lineChip, badge, lineMinis, stopLines, visibleStops, enabledNets, ensureStops,
     openStop, focusStop, viewPadding, setPanelCollapsed, setSheet, setMode,
     updateUrl, renderSummary,
     routeFromPopup,
   };
   modes.route = initPlanner(context);
   modes.nearby = initNearby(context);
+}
+
+function showFeedDates() {
+  const format = (iso) => {
+    const [y, m, d] = iso.split('-');
+    return `${d}/${m}/${y}`;
+  };
+  const emt = data.nets.get('emt')?.feed?.date;
+  const crtm = data.nets.get('inter')?.feed?.date || data.nets.get('urb')?.feed?.date;
+  if (emt) $('#feed-date-emt').textContent = ` (actualizado el ${format(emt)})`;
+  if (crtm) $('#feed-date-crtm').textContent = ` (actualizados el ${format(crtm)})`;
 }
 
 async function main() {
@@ -1000,14 +1106,13 @@ async function main() {
     $('#selected-box').append(h('p', { class: 'empty', text: 'No se han podido cargar los datos. Si has abierto el fichero directamente, usa un servidor local (mira el README).' }));
     return;
   }
-  if (data.feed?.date) {
-    const [y, m, d] = data.feed.date.split('-');
-    $('#feed-date').textContent = ` (actualizado el ${d}/${m}/${y})`;
-  }
+  showFeedDates();
   setupModes();
   const hadView = applyHash();
   if (isMobile() && state.selected.length && state.mode === 'lines') setPanelCollapsed(true);
   renderStopResults();
+  // Las paradas no bloquean el arranque: llegan en segundo plano, red a red.
+  loadMissingStops();
   await selectionChanged({ fitAll: !hadView && state.selected.length > 0 });
 }
 

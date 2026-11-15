@@ -57,7 +57,7 @@ export function locatePlace() {
  *   placeholder
  *   marker       letra o símbolo que se pinta a la izquierda («A», «B», «•»)
  *   stops        () => lista de paradas (con .search, .nameNorm)
- *   lineNames    (parada) => 'C1 · 27 · ...'
+ *   lineNames    (parada) => etiquetas de sus líneas (texto o elementos)
  *   near         () => {lat, lon} para dar preferencia a lo cercano
  *   onChange     (lugar | null) => void
  *   onPickOnMap  () => void   el usuario quiere tocar un punto del mapa
@@ -146,7 +146,7 @@ export function createPlaceInput(options) {
               : h('span', { class: `suggest-badge${item.code ? ' stop-code' : ''}`, text: item.badge }),
             h('span', { class: 'stop-text' },
               h('span', { class: 'stop-name', text: item.label }),
-              item.detail ? h('span', { class: 'stop-lines', text: item.detail }) : null,
+              item.detail ? h('span', { class: 'stop-lines' }, item.detail) : null,
             ),
           )));
       }

@@ -3,6 +3,7 @@
 /* global L */
 
 import { NETWORKS, PALETTE } from './config.js';
+import { loadRouting } from './data.js';
 import { $, h, isMobile, toast, formatMinutes, formatMeters, formatClock } from './dom.js';
 import { textColorFor } from './geo.js';
 import { createPlaceInput, mapPlace } from './places.js';
@@ -63,8 +64,8 @@ export function initPlanner(ctx) {
       placeholder: which === 'from' ? 'Origen: parada, calle o lugar' : 'Destino: parada, calle o lugar',
       marker: WHICH[which].letter,
       markerClass: which === 'from' ? 'a' : 'b',
-      stops: () => data.stops,
-      lineNames: ctx.lineNames,
+      stops: () => ctx.visibleStops(),
+      lineNames: ctx.lineMinis,
       near: () => { const c = map.getCenter(); return { lat: c.lat, lon: c.lng }; },
       onChange: (place) => {
         st[which] = place;
@@ -162,20 +163,21 @@ export function initPlanner(ctx) {
   }
 
   // --- Cálculo ----------------------------------------------------------------
-  let graphPromise = null;
+  // Un grafo por combinación de redes visibles (se guarda: cambiar de redes y
+  // volver no recalcula nada). Cada red aporta su routing.json, que se descarga
+  // una sola vez; los transbordos a pie entre redes salen de las coordenadas.
+  const graphs = new Map();
   function ensureGraph() {
-    if (!graphPromise) {
-      // Un routing.json por red; el grafo las une (los transbordos a pie entre
-      // redes salen de las coordenadas de las paradas).
-      graphPromise = Promise.all(NETWORKS.map(async (net) => {
-        const response = await fetch(`${net.path}/routing.json`);
-        if (!response.ok) throw new Error(`${net.path}/routing.json: HTTP ${response.status}`);
-        return { id: net.id, stops: data.stops.filter((stop) => stop.net === net.id), routing: await response.json() };
-      })).then(buildGraph);
-      graphPromise.catch(() => { graphPromise = null; });
+    const nets = ctx.enabledNets();
+    const key = nets.join(',');
+    if (!graphs.has(key)) {
+      const promise = Promise.all(nets.map((id) => loadRouting(data, id))).then((parts) => buildGraph(parts));
+      promise.catch(() => graphs.delete(key));
+      graphs.set(key, promise);
     }
-    return graphPromise;
+    return graphs.get(key);
   }
+  const graphReady = () => graphs.has(ctx.enabledNets().join(','));
 
   function currentWhen() {
     const match = st.when && WHEN_RE.exec(st.when);
@@ -206,8 +208,8 @@ export function initPlanner(ctx) {
     }
     let graph;
     try {
-      if (!graphPromise) {
-        st.message = 'Cargando los datos de rutas…';
+      if (!graphReady()) {
+        st.message = 'Cargando los horarios…';
         renderResults();
       }
       graph = await ensureGraph();
@@ -320,6 +322,11 @@ export function initPlanner(ctx) {
 
   function waitText(leg) {
     const every = leg.gap > 0 ? `pasa cada ${formatMinutes(leg.gap)}` : null;
+    if (leg.exact) {
+      // Redes de horario (CRTM): la hora es la del horario oficial
+      const wait = leg.wait >= 60 ? ` · espera de ${formatMinutes(leg.wait)}` : '';
+      return `Sale a las ${formatClock(leg.depart)} según el horario${wait}`;
+    }
     if (leg.scheduled) {
       return `Sale a las ${formatClock(leg.depart)}${every ? ` (${every})` : ''} · espera de ${formatMinutes(leg.wait)}`;
     }
@@ -340,6 +347,7 @@ export function initPlanner(ctx) {
       leg.altLines.length ? h('div', { class: 'step-note', text: 'Te vale cualquiera de estas líneas: coge la primera que pase.' }) : null,
       h('div', { class: 'step-row' }, h('span', { class: 'step-time', text: formatClock(leg.depart) }), h('span', {}, 'Sube en ', stopLink(leg.board))),
       h('div', { class: 'step-note', text: waitText(leg) }),
+      leg.estimated ? h('div', { class: 'step-note warn', text: 'El GTFS no trae las horas de paso de esta línea: la duración del viaje es una estimación.' }) : null,
       middle.length
         ? h('details', { class: 'step-stops' },
           h('summary', { text: `${count} paradas · ${formatMinutes(leg.time)}` }),
@@ -387,8 +395,8 @@ export function initPlanner(ctx) {
     }
     if (!st.from || !st.to) {
       resultsBox.append(h('div', { class: 'hint' },
-        h('p', { text: 'Escribe el origen y el destino (una parada, una calle o un lugar) o toca el mapa para elegirlos. Verás las mejores rutas en autobús de la EMT.' }),
-        h('p', { class: 'hint-small', text: 'Los tiempos son estimaciones a partir de las frecuencias oficiales, no del tráfico real.' }),
+        h('p', { text: 'Escribe el origen y el destino (una parada, una calle o un lugar) o toca el mapa para elegirlos. Verás las mejores rutas en autobús, combinando EMT, interurbanos y urbanos de otros municipios.' }),
+        h('p', { class: 'hint-small', text: 'Los tiempos salen de los horarios y frecuencias oficiales, no del tráfico real. Con «Redes», sobre el mapa, eliges qué redes entran en el cálculo.' }),
       ));
       return;
     }
@@ -397,10 +405,14 @@ export function initPlanner(ctx) {
     if (result.stale) {
       resultsBox.append(h('p', { class: 'notice', text: 'Los datos no cubren esa fecha: se usan los horarios de ese día de la semana.' }));
     }
+    const hidden = NETWORKS.filter((net) => !ctx.state.nets.has(net.id)).map((net) => net.short);
+    if (hidden.length) {
+      resultsBox.append(h('p', { class: 'notice soft', text: `No se están usando: ${hidden.join(' ni ')}. Actívalas en «Redes», sobre el mapa, si quieres combinarlas.` }));
+    }
     const reasons = {
-      'no-stops-from': 'No hay paradas de la EMT cerca del origen (a menos de 1,5 km).',
-      'no-stops-to': 'No hay paradas de la EMT cerca del destino (a menos de 1,5 km).',
-      'no-service': 'No se ha encontrado ninguna ruta en autobús de la EMT a esa hora.',
+      'no-stops-from': 'No hay paradas cerca del origen (a menos de 1,5 km) en las redes activas.',
+      'no-stops-to': 'No hay paradas cerca del destino (a menos de 1,5 km) en las redes activas.',
+      'no-service': 'No se ha encontrado ninguna ruta en autobús a esa hora con las redes activas.',
       'walk-is-better': 'Está muy cerca: en autobús no se gana tiempo.',
     };
     if (result.reason) resultsBox.append(h('p', { class: 'notice', text: reasons[result.reason] }));
@@ -504,28 +516,43 @@ export function initPlanner(ctx) {
     return indexes;
   }
 
-  /** Trazado por las calles de un tramo en autobús (o líneas rectas si no se puede). */
+  /**
+   * Trazado por las calles de un tramo en autobús.
+   *
+   * Solo se guarda el trazado del recorrido principal de cada línea y sentido,
+   * y un viaje puede ir por una variante (saltarse paradas, entrar a una
+   * urbanización...). Por eso se avanza parada a parada: mientras dos paradas
+   * consecutivas del tramo estén también, y en ese orden, en el recorrido
+   * principal, se sigue su trazado; donde no, se unen en línea recta.
+   */
   async function legPath(leg) {
     const straight = leg.stops.map((s) => [s.lat, s.lon]);
     try {
       const file = await ctx.loadLine(leg.line);
       const dir = file.dirs.find((d) => d.dir === leg.dir);
       if (!dir) return straight;
-      const count = leg.stops.length;
-      let start = -1;
-      for (let b = 0; b + count <= dir.stops.length; b++) {
-        if (dir.stops[b] === leg.board.id && dir.stops[b + count - 1] === leg.alight.id) {
-          start = b;
-          break;
-        }
-      }
-      if (start < 0) return straight;
       const indexes = stopTrackIndexes(dir);
-      const a = indexes[start];
-      const z = indexes[start + count - 1];
-      if (z <= a) return straight;
-      const points = [];
-      for (let i = a; i <= z; i++) points.push([dir.track.lat[i], dir.track.lon[i]]);
+      const { lat, lon } = dir.track;
+      const where = new Map(); // id de parada -> posiciones en el recorrido principal
+      dir.stops.forEach((id, k) => {
+        if (!where.has(id)) where.set(id, []);
+        where.get(id).push(k);
+      });
+      const after = (id, k) => where.get(id)?.find((pos) => pos > k) ?? -1;
+
+      const points = [straight[0]];
+      let last = after(leg.stops[0].id, -1); // posición de la última parada encontrada
+      let chained = last >= 0;               // ¿la parada anterior estaba en el recorrido?
+      for (let i = 1; i < leg.stops.length; i++) {
+        const k = after(leg.stops[i].id, last);
+        if (chained && k >= 0 && indexes[k] > indexes[last]) {
+          for (let j = indexes[last] + 1; j <= indexes[k]; j++) points.push([lat[j], lon[j]]);
+        } else {
+          points.push(straight[i]);
+        }
+        chained = k >= 0;
+        if (k >= 0) last = k;
+      }
       return points;
     } catch {
       return straight;
@@ -589,6 +616,11 @@ export function initPlanner(ctx) {
     setEndpoint,
     onMapClick,
     onSelection() {},
+
+    /** Han cambiado las redes visibles: se recalcula con las que queden. */
+    onNets() {
+      compute({ fit: false, raise: false });
+    },
 
     activate() {
       st.active = true;

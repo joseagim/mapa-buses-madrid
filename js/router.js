@@ -1,14 +1,24 @@
 // Buscador de rutas en autobús. No toca el DOM: se puede probar con Node
 // (tests/router.test.mjs).
 //
-// DATOS. Cada red aporta sus paradas y su routing.json, con un «recorrido»
-// por línea y sentido: lista de paradas, perfil de tiempos y, por tipo de día,
-// «franjas» [primera salida, última salida, nº de salidas, duración]. Dentro
-// de una franja las salidas se suponen repartidas de forma regular:
-//   - si pasan cada 15 min o menos, se espera de media medio intervalo (los
-//     buses urbanos no cumplen un horario al minuto);
-//   - si pasan cada más de 15 min (búhos, líneas especiales), se espera a la
-//     siguiente salida, como con un horario.
+// DATOS. Cada red aporta sus paradas, sus líneas y su routing.json, con un
+// «recorrido» por línea, sentido y secuencia de paradas: lista de paradas,
+// perfil de tiempos y, por cada conjunto de fechas, «franjas» [primera salida,
+// última salida, nº de salidas, duración]. Hay dos tipos de red:
+//
+//   - De FRECUENCIA (EMT, `exact: false`): dentro de una franja las salidas se
+//     suponen repartidas de forma regular. Si pasan cada 15 min o menos, se
+//     espera de media medio intervalo (un autobús urbano no cumple un horario
+//     al minuto); si pasan cada más de 15 min, se espera a la siguiente salida.
+//   - De HORARIO (interurbanos y urbanos del CRTM, `exact: true`): las franjas
+//     guardan las salidas reales (primera + k × intervalo, sin pérdida) y
+//     siempre se espera a la siguiente salida. Son líneas de poca frecuencia:
+//     suponer «medio intervalo» daría errores de media hora.
+//
+// CALENDARIO. Cada conjunto de fechas es una ristra de bits, uno por día desde
+// `calendar.start`. Fuera de esa ventana se usa el día de la semana. Los
+// festivos que conoce una red valen para las demás cuando su GTFS no detalla
+// esa fecha: ese día se aplica el horario del domingo siguiente.
 //
 // ALGORITMO. RAPTOR: en la ronda k se calcula la hora más temprana de llegada
 // a cada parada usando como mucho k autobuses. En cada ronda se recorren solo
@@ -18,58 +28,67 @@
 //
 // VARIAS REDES. El grafo se monta con todas las redes que se le pasen: los
 // recorridos se concatenan y los transbordos a pie salen de las coordenadas,
-// así que al añadir otra red (CRTM) los transbordos entre redes salen solos.
+// así que los transbordos entre redes (de un interurbano a la EMT en un
+// intercambiador) no necesitan nada especial.
 
 import { ROUTING } from './config.js';
 import { PointGrid, distanceM } from './geo.js';
 
 const DAY = 86400;
-const SUPPORTED_VERSION = 1;
+const SUPPORTED_VERSION = 2;
 
 // ---------------------------------------------------------------------------
 // Grafo
 // ---------------------------------------------------------------------------
 
 /**
- * @param {Array<{id:string, stops:Array, routing:object}>} networks
- *        `stops` en el mismo orden que stops.json; cada parada {lat, lon, ...}.
+ * @param {Array<{id:string, stops:Array, lines:Array, routing:object}>} networks
+ *        `stops` y `lines` en el mismo orden que stops.json e index.json; cada
+ *        parada {lat, lon, ...} y cada línea {id, ...}. Una misma parada puede
+ *        venir en varias redes (el mismo objeto): entra una sola vez.
  */
 export function buildGraph(networks, options = {}) {
   const opt = { ...ROUTING, ...options };
   const stops = [];
+  const stopIndex = new Map(); // objeto parada -> posición en `stops`
   const patterns = [];
   const calendars = [];
-  const lineKeys = new Map(); // 'red:línea' -> [índices de recorrido]
+  const holidays = new Set();
+  const lineKeys = new Map(); // id de línea -> [índices de recorrido]
 
   for (const net of networks) {
-    if (net.routing.version !== SUPPORTED_VERSION) {
-      throw new Error(`routing.json de ${net.id}: versión ${net.routing.version} no soportada`);
+    const routing = net.routing;
+    if (routing.version !== SUPPORTED_VERSION) {
+      throw new Error(`routing.json de ${net.id}: versión ${routing.version} no soportada`);
     }
-    const offset = stops.length;
-    for (const stop of net.stops) stops.push(stop);
-    const cal = calendars.length;
-    calendars.push({
-      net: net.id,
-      services: net.routing.services,
-      exceptions: net.routing.exceptions,
-      scheduleHeadway: net.routing.scheduleHeadway,
+    const local = net.stops.map((stop) => {
+      if (!stopIndex.has(stop)) {
+        stopIndex.set(stop, stops.length);
+        stops.push(stop);
+      }
+      return stopIndex.get(stop);
     });
-    for (const raw of net.routing.patterns) {
+    const cal = calendars.length;
+    calendars.push({ net: net.id, ...routing.calendar });
+    for (const date of routing.calendar.holidays) holidays.add(date);
+    for (const raw of routing.patterns) {
       const total = raw.time[raw.time.length - 1];
-      const key = `${net.id}:${raw.line}`;
+      const key = net.lines[raw.line].id;
       const index = patterns.length;
       patterns.push({
         index,
         net: net.id,
-        line: raw.line,
+        line: key,
         lineKey: key,
         dir: raw.dir,
         cal,
-        stops: Int32Array.from(raw.stops, (s) => s + offset),
+        exact: Boolean(routing.exact),
+        estimated: Boolean(raw.est), // el GTFS no trae horas de paso: tiempos de recorrido estimados
+        stops: Int32Array.from(raw.stops, (s) => local[s]),
         frac: Float64Array.from(raw.time, (t) => t / total), // 0 en la cabecera, 1 al final
-        bandsBySvc: raw.bands,
-        bands: null, // franjas del día consultado (prepareDay)
-        schedHeadway: net.routing.scheduleHeadway,
+        bandsBySet: raw.bands,   // [[conjunto de fechas, franjas], ...]
+        bands: null,             // franjas del día consultado (prepareDay)
+        schedHeadway: routing.scheduleHeadway,
       });
       if (!lineKeys.has(key)) lineKeys.set(key, []);
       lineKeys.get(key).push(index);
@@ -93,7 +112,7 @@ export function buildGraph(networks, options = {}) {
     return list;
   });
 
-  return { opt, stops, patterns, calendars, lineKeys, stopPats, foot, grid, walkSecPerM, day: null };
+  return { opt, stops, patterns, calendars, holidays, lineKeys, stopPats, foot, grid, walkSecPerM, day: null };
 }
 
 // ---------------------------------------------------------------------------
@@ -106,20 +125,33 @@ function addDays(iso, n) {
   return d.toISOString().slice(0, 10);
 }
 
-/** Servicios (tipos de día) que funcionan en una fecha 'AAAA-MM-DD'. */
-export function activeServices(calendar, iso) {
-  const dow = (new Date(`${iso}T00:00:00Z`).getUTCDay() + 6) % 7; // 0 = lunes
-  const all = Object.entries(calendar.services);
-  let inRange = all.filter(([, s]) => iso >= s.from && iso <= s.to);
-  // Fecha fuera del periodo del feed (datos caducados o fecha lejana): se usa
-  // el día de la semana, que es mejor que no dar ninguna ruta.
-  const stale = inRange.length === 0;
-  if (stale) inRange = all;
-  const active = new Set(inRange.filter(([, s]) => s.days[dow]).map(([id]) => id));
-  for (const [date, id, type] of calendar.exceptions) {
-    if (date !== iso) continue;
-    if (type === 1) active.add(id);
-    else active.delete(id);
+const dayNumber = (iso) => Math.round(Date.parse(`${iso}T00:00:00Z`) / 86400000);
+
+/**
+ * Conjuntos de fechas de una red que están en vigor un día 'AAAA-MM-DD'.
+ * Devuelve {active: Uint8Array (1 = en vigor), stale: true si la fecha queda
+ * fuera de la ventana de los datos}.
+ *
+ * @param {Set<string>} holidays  festivos conocidos por cualquiera de las redes
+ */
+export function activeSets(calendar, iso, holidays = new Set()) {
+  let weekday = (new Date(`${iso}T00:00:00Z`).getUTCDay() + 6) % 7; // 0 = lunes
+  let date = iso;
+  // Festivo que el GTFS de esta red no detalla: se aplica el horario del
+  // domingo siguiente (el del mismo día si ya es domingo).
+  if (holidays.has(iso) && iso > calendar.detailTo && weekday !== 6) {
+    date = addDays(iso, 6 - weekday);
+    weekday = 6;
+  }
+  const index = dayNumber(date) - dayNumber(calendar.start);
+  const stale = index < 0 || index >= calendar.days;
+  const active = new Uint8Array(calendar.sets.length);
+  for (let i = 0; i < active.length; i++) {
+    active[i] = stale
+      // Fecha fuera de la ventana (datos caducados o fecha lejana): se usa el
+      // día de la semana, que es mejor que no dar ninguna ruta.
+      ? (calendar.week[i] >> weekday) & 1
+      : (parseInt(calendar.sets[i][index >> 2], 16) >> (index & 3)) & 1;
   }
   return { active, stale };
 }
@@ -134,22 +166,21 @@ function prepareDay(graph, iso) {
   if (graph.day?.date === iso) return graph.day;
   let stale = false;
   const perCal = graph.calendars.map((cal) => [-1, 0, 1].map((offset) => {
-    const result = activeServices(cal, addDays(iso, offset));
+    const result = activeSets(cal, addDays(iso, offset), graph.holidays);
     if (offset === 0 && result.stale) stale = true;
     return { offset, active: result.active };
   }));
   for (const pat of graph.patterns) {
     const quads = [];
     for (const { offset, active } of perCal[pat.cal]) {
-      for (const svc of active) {
-        const bands = pat.bandsBySvc[svc];
-        if (!bands) continue;
+      for (const [set, bands] of pat.bandsBySet) {
+        if (!active[set]) continue;
         for (let b = 0; b < bands.length; b += 4) {
           quads.push([bands[b] + offset * DAY, bands[b + 1] + offset * DAY, bands[b + 2], bands[b + 3]]);
         }
       }
     }
-    quads.sort((a, b) => a[0] - b[0]);
+    quads.sort((a, b) => a[0] - b[0] || a[1] - b[1]);
     pat.bands = Float64Array.from(quads.flat());
   }
   graph.day = { date: iso, stale };
@@ -179,7 +210,7 @@ function board(pat, frac, t) {
     const first = bands[b] + shift;
     const last = bands[b + 1] + shift;
     if (t > last) continue;
-    if (found && first >= bDepart) break; // las franjas van ordenadas
+    if (found && bands[b] >= bDepart) break; // las franjas van ordenadas por su primera salida
     const n = bands[b + 2];
     const gap = n > 1 ? (last - first) / (n - 1) : 0;
     let depart;
@@ -187,12 +218,13 @@ function board(pat, frac, t) {
     if (t <= first) {
       depart = first;
       // hueco entre dos franjas de una línea frecuente: sigue siendo «cada X min»
-      freq = gap > 0 && gap <= pat.schedHeadway && first - t <= gap;
-    } else if (gap <= pat.schedHeadway) {
+      freq = !pat.exact && gap > 0 && gap <= pat.schedHeadway && first - t <= gap;
+    } else if (!pat.exact && gap <= pat.schedHeadway) {
       depart = Math.min(t + gap / 2, last);
       freq = true;
     } else {
-      depart = first + Math.ceil((t - first) / gap) * gap;
+      // horario: la siguiente salida de la franja (primera + k × intervalo)
+      depart = first + Math.ceil((t - first) / gap - 1e-9) * gap;
     }
     if (!found || depart < bDepart) {
       found = true;
@@ -441,6 +473,8 @@ function buildItinerary(graph, q, rides) {
       dir: pat.dir,
       pattern: pat.index,
       altLines: alts.map((a) => ({ net: a.net, line: a.line })),
+      exact: pat.exact,         // red de horario (CRTM): la hora de salida es la del horario oficial
+      estimated: pat.estimated, // tiempos de recorrido estimados (el GTFS no trae horas de paso)
       board: boardStop,
       alight: alightStop,
       stops: Array.from(pat.stops.subarray(main.boardPos, main.alightPos + 1), (s) => stops[s]),
@@ -471,7 +505,7 @@ function buildItinerary(graph, q, rides) {
     walkTime,
     walkDist,
     waitTime,
-    lines: rideLegs.map((l) => `${l.net}:${l.line}`),
+    lines: rideLegs.map((l) => l.line),
     cost: duration + transfers * opt.transferPenaltyS + 0.5 * walkTime,
   };
 }
@@ -557,7 +591,7 @@ export function planRoutes(graph, query) {
   };
   const linesOf = (itinerary) => itinerary.legs
     .filter((l) => l.type === 'ride')
-    .map((l) => [`${l.net}:${l.line}`, ...l.altLines.map((a) => `${a.net}:${a.line}`)]);
+    .map((l) => [l.line, ...l.altLines.map((a) => a.line)]);
 
   const first = search();
   if (first) {

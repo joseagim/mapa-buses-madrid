@@ -738,6 +738,20 @@ def crtm_trip_classes(trips, rows, holidays):
 # Tiempos de recorrido
 # ---------------------------------------------------------------------------
 
+# El GTFS del CRTM trae, según el operador, tres calidades de horas de paso:
+#
+#   - buenas;
+#   - duración total creíble pero mal repartida entre paradas (16 km de autovía
+#     en minuto y medio y luego 2 minutos entre paradas contiguas);
+#   - duración total imposible (Madrid - Alcalá de Henares en 12 minutos), o
+#     ninguna hora de paso.
+#
+# Se distinguen por la velocidad en línea recta entre paradas, y lo que no es
+# creíble se sustituye por una estimación aprendida de los viajes buenos.
+
+MAX_TRIP_SPEED = 80 / 3.6      # media de un viaje entero (m/s)
+MAX_HOP_SPEED = 110 / 3.6      # entre dos paradas separadas más de 1 km (m/s)
+
 # Tramos de distancia (m, en línea recta entre paradas) para el modelo de velocidad.
 SPEED_BUCKETS = (300, 700, 1500, 4000, 10000)
 
@@ -749,18 +763,37 @@ def bucket_of(dist):
     return len(SPEED_BUCKETS)
 
 
-def build_time_model(patterns, coords):
-    """Aprende de los viajes con horas reales cuánto se tarda entre paradas.
+def hop_lengths(stops, coords):
+    """Metros en línea recta entre paradas consecutivas (None si falta alguna coordenada)."""
+    if any(stop not in coords for stop in stops):
+        return None
+    return [meters(coords[a], coords[b]) for a, b in zip(stops, stops[1:])]
+
+
+def judge_profile(profile, lengths):
+    """'ok', 'shape' (total creíble, reparto imposible) o 'total' (duración imposible)."""
+    if lengths is None:
+        return "ok"
+    if profile[-1] <= 0 or sum(lengths) > MAX_TRIP_SPEED * profile[-1]:
+        return "total"
+    for length, ta, tb in zip(lengths, profile, profile[1:]):
+        if length >= 1000 and length > MAX_HOP_SPEED * (tb - ta):
+            return "shape"
+    return "ok"
+
+
+def build_time_model(patterns, coords, verdict):
+    """Aprende de los viajes con horas creíbles cuánto se tarda entre paradas.
 
     Devuelve (hops, speeds):
       hops    {(parada_a, parada_b): mediana de segundos observados}
       speeds  velocidad mediana (m/s) por tramo de distancia entre paradas
-    Sirve para estimar los viajes que el GTFS trae sin horas de paso.
     """
     hop_times = defaultdict(list)
     for pats in patterns.values():
         for pat in pats.values():
-            counts = Counter(profile for _, _, profile in pat.trips if profile)
+            counts = Counter(profile for _, _, profile in pat.trips
+                             if profile and verdict[(pat.stops, profile)] == "ok")
             for profile, n in counts.items():
                 for a, b, ta, tb in zip(pat.stops, pat.stops[1:], profile, profile[1:]):
                     hop_times[(a, b)] += [tb - ta] * min(n, 5)
@@ -788,7 +821,7 @@ def estimate_profile(stops, coords, hops, speeds):
             dist = meters(coords[a], coords[b]) if a in coords and b in coords else 400
             secs = max(20, dist / speeds[bucket_of(dist)])
         out.append(out[-1] + secs)
-    return [round(t) for t in out]
+    return out
 
 
 def resolve_profiles(patterns, coords):
@@ -796,32 +829,51 @@ def resolve_profiles(patterns, coords):
 
     Tras esto, cada viaje es (trip_id, salida, duración) y cada Pattern tiene
     `profile` (segundos acumulados; el último es la duración de referencia).
-    Devuelve (viajes estimados, viajes en total).
+    Devuelve un contador de viajes: 'total', 'untimed' (sin horas de paso),
+    'bad_total' (duración imposible, sustituida) y 'bad_shape' (reparto
+    imposible entre paradas, rehecho).
     """
-    hops, speeds = build_time_model(patterns, coords)
-    estimated = total = 0
+    verdict = {}
     for pats in patterns.values():
         for pat in pats.values():
-            timed = [p for _, _, p in pat.trips if p]
-            if timed:
+            lengths = hop_lengths(pat.stops, coords)
+            for _, _, profile in pat.trips:
+                if profile and (pat.stops, profile) not in verdict:
+                    verdict[(pat.stops, profile)] = judge_profile(profile, lengths)
+    hops, speeds = build_time_model(patterns, coords, verdict)
+
+    stats = Counter()
+    for pats in patterns.values():
+        for pat in pats.values():
+            judged = [(profile, verdict[(pat.stops, profile)] if profile else "none")
+                      for _, _, profile in pat.trips]
+            good = [p for p, v in judged if v == "ok"]
+            credible = [p[-1] for p, v in judged if v in ("ok", "shape")]   # duraciones creíbles
+            model = estimate_profile(pat.stops, coords, hops, speeds)
+            if good:
                 # El perfil más repetido; a igualdad, el de duración mediana
-                counts = Counter(timed)
+                counts = Counter(good)
                 top = max(counts.values())
                 best = sorted(p for p, n in counts.items() if n == top)
                 pat.profile = list(best[len(best) // 2])
-                typical = round(median(p[-1] for p in timed))
             else:
-                pat.profile = estimate_profile(pat.stops, coords, hops, speeds)
+                # Reparto estimado; la duración total, la del GTFS si es creíble
+                total = median(credible) if credible else model[-1]
+                pat.profile = [round(t * total / model[-1]) for t in model]
                 pat.estimated = True
-                typical = pat.profile[-1]
+            typical = round(median(credible)) if credible else pat.profile[-1]
             trips = []
-            for trip_id, start, profile in pat.trips:
-                total += 1
-                if profile is None:
-                    estimated += 1
-                trips.append((trip_id, start, profile[-1] if profile else typical))
+            for (trip_id, start, profile), (_, v) in zip(pat.trips, judged):
+                stats["total"] += 1
+                if v == "none":
+                    stats["untimed"] += 1
+                elif v == "total":
+                    stats["bad_total"] += 1
+                elif v == "shape" and not good:
+                    stats["bad_shape"] += 1
+                trips.append((trip_id, start, profile[-1] if v in ("ok", "shape") else typical))
             pat.trips = trips
-    return estimated, total
+    return stats
 
 
 # ---------------------------------------------------------------------------
@@ -1154,7 +1206,7 @@ def build_network(net, src, out, tolerance=None, feed_date=None):
         for trip_id, info in trips.items():
             id_starts[trip_id] = trip_id_parts(trip_id, info[2], info[0])[1]
     patterns = read_patterns(feed, {t: info for t, info in trips.items() if trip_mask.get(t)}, id_starts)
-    estimated, total_trips = resolve_profiles(patterns, coords)
+    time_stats = resolve_profiles(patterns, coords)
 
     # Recorrido principal de cada línea y sentido: el de más viajes (a igualdad, el más largo)
     main = {key: max(pats.values(), key=lambda p: (len(p.trips), len(p.stops)))
@@ -1298,7 +1350,9 @@ def build_network(net, src, out, tolerance=None, feed_date=None):
           f"{len(routing['calendar']['sets'])} calendarios")
     if calendar_note:
         print(calendar_note)
-    print(f"  viajes sin horas de paso en el GTFS (tiempo estimado): {estimated} de {total_trips}")
+    print(f"  tiempos de recorrido: {time_stats['total']} viajes; estimados {time_stats['untimed']} sin horas de paso "
+          f"y {time_stats['bad_total']} con una duración imposible; {time_stats['bad_shape']} con el reparto entre "
+          f"paradas rehecho")
     print(f"  festivos detectados: {', '.join(routing['calendar']['holidays']) or 'ninguno'} "
           f"(detalle del calendario hasta {routing['calendar']['detailTo']})")
     print(f"  index.json {kb('index.json'):.0f} KB · stops.json {kb('stops.json'):.0f} KB · "

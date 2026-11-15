@@ -1,13 +1,15 @@
 // Configuración general de la web.
 
-// Red de transporte que se muestra. Para añadir otra capa (por ejemplo los
-// interurbanos del CRTM) bastaría con generar sus datos con
-// scripts/build_data.py en otra carpeta y añadir aquí otra entrada.
-export const NETWORK = {
-  id: 'emt',
-  name: 'EMT Madrid',
-  path: 'data/emt',
-};
+// Redes de transporte. Cada una tiene su carpeta de datos (generada con
+// scripts/build_data.py) y un color propio, que es el de las etiquetas de sus
+// líneas en toda la web: azul EMT, verde interurbanos y rojo urbanos de otros
+// municipios (los colores con que el Consorcio las distingue). `soft` es un
+// tono más claro, para el borde de las paradas en el mapa.
+export const NETWORKS = [
+  { id: 'emt', name: 'EMT Madrid', short: 'EMT', color: '#0b69c7', soft: '#6a9fd8', path: 'data/emt' },
+  { id: 'inter', name: 'Interurbanos', short: 'Interurbanos', color: '#2a8a3c', soft: '#6fb47d', path: 'data/inter' },
+  { id: 'urb', name: 'Urbanos de otros municipios', short: 'Urbanos', color: '#d3202f', soft: '#e3838b', path: 'data/urb' },
+];
 
 // Vista inicial: Puerta del Sol.
 export const HOME = { center: [40.4168, -3.7038], zoom: 13 };
@@ -43,17 +45,11 @@ export const ZOOM = {
 export const TRANSFER_RADIUS_M = 250;
 
 // Líneas del botón de ejemplo.
-export const EXAMPLE_LINES = ['C1', 'C2', '27', '73'];
+export const EXAMPLE_LINES = ['emt:C1', 'emt:C2', 'emt:27', 'emt:73'];
 
 // ---------------------------------------------------------------------------
 // Buscador de rutas
 // ---------------------------------------------------------------------------
-
-// Redes que entran en el cálculo de rutas. Cada una aporta su stops.json y su
-// routing.json; los transbordos a pie entre redes salen solos de las
-// coordenadas de las paradas. Para sumar los interurbanos del CRTM bastará
-// con generar data/crtm/ y añadir aquí { id: 'crtm', name: ..., path: 'data/crtm' }.
-export const NETWORKS = [NETWORK];
 
 export const ROUTING = {
   walkSpeedKmh: 4.5,      // velocidad a pie

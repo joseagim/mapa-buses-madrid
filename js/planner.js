@@ -597,6 +597,7 @@ export function initPlanner(ctx) {
     deactivate() {
       st.active = false;
       st.armed = null;
+      map.closePopup(pickPopup);
       lineLayer.remove();
       pinLayer.remove();
     },

@@ -8,7 +8,7 @@ paso sin marcar. Este fichero se borra antes del push.
 
 ## A. Correcciones
 
-- [ ] **A1. Cuadro de parada que se cierra solo.** Causa: al pulsar una línea
+- [x] **A1. Cuadro de parada que se cierra solo.** Causa: al pulsar una línea
   del popup se rehace su contenido (`setContent`) mientras el clic todavía está
   subiendo por el DOM; el botón pulsado ya no cuelga del popup, Leaflet deja de
   reconocer el clic como «dentro del popup» y lo trata como un clic en el mapa

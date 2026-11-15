@@ -402,7 +402,9 @@ ul, ol.route-list, ol.steps { list-style: none; margin: 0; padding: 0; }
 .chips { display: flex; flex-wrap: wrap; gap: 5px; max-height: 150px; overflow-y: auto; }
 .chip { cursor: pointer; padding: 5px 8px; }
 .chip:hover { filter: brightness(0.93); }
-.stop-popup .btn { width: 100%; margin-top: 12px; }
+/* El texto del botón cambia al seleccionar líneas: sin saltos de línea, para
+   que el popup no cambie de alto y los chips no se muevan bajo el dedo. */
+.stop-popup .btn { width: 100%; margin-top: 12px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .sp-route { display: flex; gap: 6px; margin-top: 6px; }
 .stop-popup .sp-route .btn { flex: 1; margin-top: 0; }
 

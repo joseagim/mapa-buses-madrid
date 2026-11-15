@@ -94,7 +94,7 @@ const routeGroup = L.layerGroup().addTo(map);
 const linkGroup = L.layerGroup().addTo(map);
 const stopGroup = L.layerGroup().addTo(map);
 
-const popup = L.popup({ maxWidth: 280, minWidth: 200, autoPanPadding: [16, 16] });
+const popup = L.popup({ maxWidth: 300, minWidth: 240, autoPanPadding: [16, 16] });
 map.on('popupclose', (e) => {
   if (e.popup === popup) state.openStop = null;
 });
@@ -411,43 +411,70 @@ map.on('moveend', () => {
 // Paradas: popup y buscador
 // ---------------------------------------------------------------------------
 
-function lineChip(line) {
+/** Pone un chip de línea al día (seleccionada o no) sin sustituirlo por otro. */
+function updateChip(chip, line) {
   const sel = selectionOf(line.id);
-  return h('button', {
+  chip.classList.toggle('on', Boolean(sel));
+  chip.style.cssText = sel ? `background:${sel.color};color:${textColorFor(sel.color)}` : '';
+  chip.title = `${line.name} · ${line.long}` + (sel ? ' (pulsa para quitarla)' : ' (pulsa para seleccionarla)');
+  chip.setAttribute('aria-pressed', sel ? 'true' : 'false');
+}
+
+function lineChip(line) {
+  const chip = h('button', {
     type: 'button',
-    class: 'badge chip' + (sel ? ' on' : ''),
-    style: sel ? `background:${sel.color};color:${textColorFor(sel.color)}` : null,
-    title: `${line.name} · ${line.long}` + (sel ? ' (pulsa para quitarla)' : ' (pulsa para seleccionarla)'),
-    'aria-pressed': sel ? 'true' : 'false',
+    class: 'badge chip',
     onclick: () => toggleLine(line.id),
     text: line.name,
   });
+  updateChip(chip, line);
+  return chip;
 }
 
+/**
+ * Contenido del popup de una parada. Devuelve el elemento con un método
+ * `update()` que lo pone al día (líneas seleccionadas, texto del botón) SIN
+ * sustituir sus nodos.
+ *
+ * Eso es importante: si el contenido se rehace mientras un clic dentro del
+ * popup todavía está subiendo por el DOM, el botón pulsado deja de colgar del
+ * popup, Leaflet ya no lo reconoce como «clic dentro de un popup» y lo trata
+ * como un clic en el mapa, que cierra el popup. Pasaba al quitar una línea o
+ * al seleccionar una que ya estaba cargada (si hay que descargarla, el
+ * redibujado llega más tarde y no coincide con el clic).
+ */
 function stopPopupContent(stop) {
   const lines = stop.lines.map((id) => data.lineById.get(id)).filter(Boolean);
-  const missing = lines.filter((l) => !isSelected(l.id));
-  return h('div', { class: 'stop-popup' },
+  const chips = lines.map((line) => [lineChip(line), line]);
+  const missing = () => lines.filter((l) => !isSelected(l.id));
+  const selectAll = h('button', {
+    type: 'button',
+    class: 'btn primary',
+    onclick: () => addLines(missing().map((l) => l.id)),
+  });
+  const root = h('div', { class: 'stop-popup' },
     h('div', { class: 'sp-name', text: stop.name }),
     h('div', { class: 'sp-code', text: `Parada nº ${stop.code}` }),
     h('div', { class: 'sp-label', text: lines.length === 1 ? 'Pasa 1 línea:' : `Pasan ${lines.length} líneas:` }),
-    h('div', { class: 'chips' }, lines.map(lineChip)),
-    h('button', {
-      type: 'button',
-      class: 'btn primary',
-      disabled: missing.length === 0,
-      onclick: () => addLines(missing.map((l) => l.id)),
-      text: missing.length === 0
-        ? 'Todas seleccionadas ✓'
-        : lines.length === 1 ? 'Seleccionar esta línea'
-          : missing.length === lines.length ? `Seleccionar las ${lines.length} líneas`
-            : missing.length === 1 ? 'Seleccionar la que falta' : `Seleccionar las ${missing.length} que faltan`,
-    }),
+    h('div', { class: 'chips' }, chips.map(([chip]) => chip)),
+    selectAll,
     h('div', { class: 'sp-route' },
       h('button', { type: 'button', class: 'btn small', onclick: () => routeFromPopup('from', stopPlace(stop)), text: 'Salir de aquí' }),
       h('button', { type: 'button', class: 'btn small', onclick: () => routeFromPopup('to', stopPlace(stop)), text: 'Llegar aquí' }),
     ),
   );
+  root.update = () => {
+    for (const [chip, line] of chips) updateChip(chip, line);
+    const left = missing().length;
+    selectAll.disabled = left === 0;
+    selectAll.textContent = left === 0
+      ? 'Todas seleccionadas ✓'
+      : lines.length === 1 ? 'Seleccionar esta línea'
+        : left === lines.length ? `Seleccionar las ${lines.length} líneas`
+          : left === 1 ? 'Seleccionar la que falta' : `Seleccionar las ${left} que faltan`;
+  };
+  root.update();
+  return root;
 }
 
 /** Usa un lugar como origen o destino de la ruta (desde un popup del mapa). */
@@ -464,10 +491,17 @@ function openStop(stop) {
   popup.options.autoPanPaddingBottomRight = L.point(isMobile() ? [12, padding.paddingBottomRight[1] - 12] : [56, 28]);
   popup.setLatLng([stop.lat, stop.lon]).setContent(stopPopupContent(stop)).openOn(map);
   state.openStop = stop;
+  // Segunda barrera: un clic dentro del popup nunca llega al mapa.
+  const el = popup.getElement();
+  if (el && !el.dataset.guarded) {
+    el.dataset.guarded = '1';
+    el.addEventListener('click', (e) => e.stopPropagation());
+  }
 }
 
+/** Pone al día el popup abierto (sin rehacerlo: ver stopPopupContent). */
 function refreshPopup() {
-  if (state.openStop && map.hasLayer(popup)) popup.setContent(stopPopupContent(state.openStop));
+  if (state.openStop && map.hasLayer(popup)) popup.getContent()?.update?.();
 }
 
 /** Centra el mapa en una parada y abre su popup. */
@@ -766,7 +800,6 @@ function setMode(mode) {
     section.hidden = section.id !== `mode-${mode}`;
   }
   if (previous === mode) return;
-  map.closePopup();
   modes[previous]?.deactivate();
   modes[mode]?.activate();
   renderSummary();

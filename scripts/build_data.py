@@ -499,13 +499,18 @@ class Pattern:
         self.estimated = False     # True si el perfil no sale de horas reales
 
 
-def read_patterns(feed, trips):
+def read_patterns(feed, trips, id_starts=None):
     """Recorre stop_times.txt en streaming y agrupa los viajes por secuencia de paradas.
 
     Devuelve {(route_id, sentido): {tupla_de_paradas: Pattern}}. De cada viaje
     se guarda su hora de salida y su «perfil» (segundos desde la salida en cada
     parada), o None si el GTFS no trae horas de paso útiles para ese viaje.
+
+    `id_starts` (CRTM): hora de salida que lleva el propio trip_id. Hay
+    operadores que en stop_times.txt ponen «01:00:00» en todas las paradas de
+    todos los viajes: ahí la única hora real es la del identificador.
     """
+    id_starts = id_starts or {}
     patterns = defaultdict(dict)
     profiles = {}          # para no repetir en memoria perfiles idénticos
     seen = set()
@@ -538,7 +543,10 @@ def read_patterns(feed, trips):
             # Sin horas de paso: todas iguales, o casi todas (solo algún punto de control)
             if rel[-1] > 0 and not (hops > 3 and flat > 0.6 * hops):
                 profile = profiles.setdefault(rel, rel)
-        pat.trips.append((trip_id, times[0], profile))
+        start = times[0]
+        if profile is None and id_starts.get(trip_id) is not None:
+            start = id_starts[trip_id]
+        pat.trips.append((trip_id, start, profile))
 
     with feed.text("stop_times.txt") as text:
         reader = csv.reader(text)
@@ -590,60 +598,140 @@ def read_shapes(feed, wanted):
     return shapes
 
 
-def drop_catch_all_services(patterns, trips, calendar):
-    """Quita los servicios «cajón de sastre» del GTFS del CRTM.
+# ---------------------------------------------------------------------------
+# Calendario del CRTM: tipo de día de cada viaje
+# ---------------------------------------------------------------------------
+#
+# El calendario del GTFS del CRTM no se puede leer al pie de la letra:
+#
+#   - Muchos servicios dicen funcionar «todos los días» y mezclan los viajes de
+#     laborables, de sábados y de festivos. El tipo de día de verdad va
+#     escondido en el trip_id: «<servicio>-<línea>_<código>_HH:MM:SS_...», con
+#     código 1 = laborable, 2 = sábado y 3 = festivo. Tomado literalmente, un
+#     martes circularían a la vez los tres horarios.
+#   - En los operadores cuyos viajes no llevan código, cada servicio es de un
+#     día de la semana concreto, pero sale de observar unas pocas semanas: el
+#     horario de un lunes festivo queda como «todos los lunes del año» y hay
+#     servicios de un solo día.
+#
+# Así que cada VIAJE se clasifica en una o varias clases de día y el calendario
+# se reconstruye a partir de ellas.
 
-    Algunas líneas traen, además de sus servicios normales (laborables,
-    sábados, festivos...), un servicio que dice funcionar TODOS los días y que
-    repite, con un segundo de desfase, los viajes de todos los demás. Si se
-    tomara al pie de la letra, un martes pasarían a la vez los autobuses del
-    horario de laborables, los del sábado y los del domingo.
+WEEKDAYS = ("monday", "tuesday", "wednesday", "thursday", "friday", "saturday", "sunday")
+SATURDAY, HOLIDAY = 5, 6          # clases 0..4 = laborable de lunes a viernes
+CLASS_NAMES = ("lunes", "martes", "miércoles", "jueves", "viernes", "sábados", "festivos")
+TRIP_CODE = re.compile(r"^_(\d+)_(\d\d:\d\d:\d\d)_")
 
-    Se detecta así: casi todos sus viajes (90 %) tienen un «gemelo» (mismo
-    recorrido, salida a menos de un minuto) en otro servicio, y entre esos
-    otros servicios hay al menos dos que nunca coinciden en fecha (por ejemplo,
-    uno de laborables y otro de sábados). Devuelve los servicios quitados.
+
+def trip_id_parts(trip_id, service_id, route_id):
+    """(código de tipo de día, hora de salida en segundos) que lleva el trip_id
+    de muchos operadores del CRTM, o (None, None) si no sigue ese formato."""
+    prefix = f"{service_id}-{route_id}"
+    if trip_id.startswith(prefix):
+        m = TRIP_CODE.match(trip_id[len(prefix):])
+        if m:
+            return m.group(1), parse_time(m.group(2))
+    return None, None
+
+
+def read_calendar_rows(feed):
+    """service_id -> (días de la semana L..D, inicio, fin), tal cual viene en calendar.txt."""
+    rows = {}
+    for row in feed.rows("calendar.txt"):
+        rows[row["service_id"]] = (tuple(int(row[n] or 0) for n in WEEKDAYS),
+                                   parse_date(row["start_date"]), parse_date(row["end_date"]))
+    return rows
+
+
+def removed_holidays(feed, rows):
+    """Festivos entre semana que se deducen de calendar_dates.txt: fechas en las
+    que se quita de golpe un 30 % o más de los servicios de laborables."""
+    removed = Counter()
+    for row in feed.rows("calendar_dates.txt"):
+        if int(row["exception_type"]) == 2:
+            removed[parse_date(row["date"])] += 1
+    regular = Counter()        # día de la semana -> servicios de laborables que lo incluyen
+    for bits, _, _ in rows.values():
+        if sum(bits[:5]) >= 2:
+            for weekday in range(5):
+                regular[weekday] += bits[weekday]
+    return {d for d, n in removed.items()
+            if d.weekday() < 5 and regular[d.weekday()] and n >= 0.3 * regular[d.weekday()]}
+
+
+def crtm_trip_classes(trips, rows, holidays):
+    """Clases de día de cada viaje del CRTM: {trip_id: frozenset de 0..6}.
+
+    Con código en el trip_id manda el código. Sin código manda la máscara del
+    servicio, con dos salvedades, que dan clasificaciones «débiles» (solo se
+    usan si la línea no tiene otra cosa para esa clase de día):
+
+      - si su único día laborable cae en festivo la primera vez (el lunes 2 de
+        noviembre de 2026, por ejemplo), el servicio es el horario de festivo
+        y no «el de los lunes»;
+      - un servicio de un solo día es el horario de esa fecha concreta: vale
+        como «el de los viernes» únicamente si no hay otro.
+
+    Devuelve también cuántos viajes se descartan por llevar un código de
+    horario especial (6, 7, 10...: no se sabe qué días se aplican) y cuántas
+    líneas han necesitado copiar el horario de otro día laborable.
     """
-    twins = defaultdict(Counter)       # servicio -> {servicio gemelo: nº de viajes}
-    with_twin = Counter()
-    total = Counter()
-    for pats in patterns.values():
-        for pat in pats.values():
-            ordered = sorted(pat.trips, key=lambda t: t[1])
-            for i, (trip_id, start, _) in enumerate(ordered):
-                service = trips[trip_id][2]
-                total[service] += 1
-                found = set()
-                for step in (-1, 1):
-                    j = i + step
-                    while 0 <= j < len(ordered) and abs(ordered[j][1] - start) <= 60:
-                        other = trips[ordered[j][0]][2]
-                        if other != service:
-                            found.add(other)
-                        j += step
-                if found:
-                    with_twin[service] += 1
-                    for other in found:
-                        twins[service][other] += 1
-    dropped = set()
-    for service, n in total.items():
-        if with_twin[service] < 0.9 * n:
+    classes = {}
+    weak = set()               # (trip_id, clase) débiles
+    special = Counter()
+    by_route = defaultdict(list)
+    for trip_id, (route_id, _dir, service_id, _shape, _head) in trips.items():
+        row = rows.get(service_id)
+        if row is None:
             continue
-        mask = calendar.masks.get(service, 0)
-        others = [o for o in twins[service] if o not in dropped]
-        # ¿Mezcla viajes de servicios que nunca coinciden entre sí y que él engloba?
-        mixes = any(
-            calendar.masks.get(a, 0) and calendar.masks.get(b, 0)
-            and not calendar.masks[a] & calendar.masks[b]
-            and (calendar.masks[a] | calendar.masks[b]) & mask == calendar.masks[a] | calendar.masks[b]
-            for i, a in enumerate(others) for b in others[i + 1:])
-        if mixes:
-            dropped.add(service)
-    if dropped:
-        for pats in patterns.values():
-            for pat in pats.values():
-                pat.trips = [t for t in pat.trips if trips[t[0]][2] not in dropped]
-    return dropped, sum(total[s] for s in dropped)
+        bits, start, end = row
+        code, _ = trip_id_parts(trip_id, service_id, route_id)
+        labor = [w for w in range(5) if bits[w]]
+        falls_on_holiday = False
+        if len(labor) == 1:
+            first = start + timedelta(days=(labor[0] - start.weekday()) % 7)
+            falls_on_holiday = first in holidays
+        if code is None:
+            found = set() if falls_on_holiday else set(labor)
+            if bits[SATURDAY]:
+                found.add(SATURDAY)
+            if bits[6]:
+                found.add(HOLIDAY)
+            elif falls_on_holiday:
+                found.add(HOLIDAY)
+                weak.add((trip_id, HOLIDAY))
+            if start == end:
+                weak.update((trip_id, c) for c in found)
+        elif code == "1":
+            found = set(labor) if labor and not falls_on_holiday else set(range(5))
+        elif code == "2":
+            found = {SATURDAY}
+        elif code == "3":
+            found = {HOLIDAY}
+        else:
+            special[code] += 1
+            continue
+        if found:
+            classes[trip_id] = found
+            by_route[route_id].append(trip_id)
+
+    donors = 0
+    for route_id, ids in by_route.items():
+        # Lo débil solo vale donde no hay nada firme para esa clase de día
+        firm = {c for t in ids for c in classes[t] if (t, c) not in weak}
+        for t in ids:
+            classes[t] = {c for c in classes[t] if c not in firm or (t, c) not in weak}
+        # Laborables: si falta algún día (L-V), se copia el del día laborable más cercano
+        present = sorted({c for t in ids for c in classes[t] if c < 5})
+        missing = [w for w in range(5) if w not in present]
+        if present and missing:
+            donors += 1
+            for w in missing:
+                donor = min(present, key=lambda c: (abs(c - w), c))
+                for t in ids:
+                    if donor in classes[t]:
+                        classes[t].add(w)
+    return {t: frozenset(c) for t, c in classes.items() if c}, special, donors
 
 
 # ---------------------------------------------------------------------------
@@ -818,19 +906,29 @@ class Calendar:
     mismo horario se funden en uno, así que salen pocos conjuntos distintos.
     """
 
-    def __init__(self, services, start, end):
+    def __init__(self, start, end):
         self.start = start
         self.days = (end - start).days + 1
-        self.masks = {}
-        for service_id, dates in services.items():
-            mask = 0
-            for d in dates:
-                offset = (d - start).days
-                if 0 <= offset < self.days:
-                    mask |= 1 << offset
-            self.masks[service_id] = mask
+        self.masks = {}          # service_id -> máscara (redes que se leen por servicio)
         self.sets = []           # máscaras únicas, en orden de aparición
         self.index = {}
+
+    def mask_of(self, dates):
+        mask = 0
+        for d in dates:
+            offset = (d - self.start).days
+            if 0 <= offset < self.days:
+                mask |= 1 << offset
+        return mask
+
+    def class_masks(self, holidays):
+        """Máscara de cada clase de día: laborables de lunes a viernes (0..4),
+        sábados (5) y domingos y festivos (6)."""
+        masks = [0] * 7
+        for offset in range(self.days):
+            d = self.start + timedelta(days=offset)
+            masks[HOLIDAY if d in holidays else d.weekday()] |= 1 << offset
+        return masks
 
     def set_index(self, mask):
         if mask not in self.index:
@@ -894,8 +992,10 @@ def find_holidays(calendar, trip_services, first, last):
     return holidays
 
 
-def build_routing(net, patterns, line_index, stop_index, trips, freq, calendar, feed_date, detail_to):
-    """Monta routing.json: todos los recorridos con sus horarios por conjunto de fechas."""
+def build_routing(net, patterns, line_index, stop_index, trips, trip_mask, freq, calendar, feed_date, detail_to):
+    """Monta routing.json: todos los recorridos con sus horarios por conjunto de fechas.
+
+    `trip_mask` da las fechas (máscara) en que circula cada viaje."""
     out = []
     used_trips = []
     skipped = 0
@@ -908,16 +1008,15 @@ def build_routing(net, patterns, line_index, stop_index, trips, freq, calendar, 
                 continue
             by_bands = {}      # horario (tupla de franjas) -> fechas en que se aplica
             if net["exact"]:
-                # El CRTM usa un service_id por línea y bloque de viajes, así
-                # que el calendario se resuelve salida a salida: de cada una,
-                # todas las fechas en que sale, y se agrupan las que coinciden.
+                # En el CRTM el calendario se resuelve salida a salida: de
+                # cada una, todas las fechas en que sale, y se agrupan las que
+                # coinciden (así los viajes repetidos en varios servicios
+                # cuentan una sola vez).
                 when = defaultdict(int)
                 for trip_id, start, dur in pat.trips:
-                    service_id = trips[trip_id][2]
                     if start % 60 == 1:
                         start -= 1     # «06:40:01»: segundo suelto que mete el GTFS
-                    when[(start, dur)] |= calendar.masks.get(service_id, 0)
-                    used_trips.append(service_id)
+                    when[(start, dur)] |= trip_mask.get(trip_id, 0)
                 by_mask = defaultdict(list)
                 for pair, mask in when.items():
                     if mask:
@@ -959,7 +1058,7 @@ def build_routing(net, patterns, line_index, stop_index, trips, freq, calendar, 
         "calendar": {
             "start": calendar.start.isoformat(),
             "days": calendar.days,
-            "detailTo": (detail_to or calendar.start).isoformat(),
+            "detailTo": (detail_to or calendar.start - timedelta(days=1)).isoformat(),
             "holidays": find_holidays(calendar, used_trips, feed_date, detail_to),
             "sets": [calendar.hex(mask) for mask in calendar.sets],
             "week": [calendar.week_mask(mask, since) for mask in calendar.sets],
@@ -1009,30 +1108,52 @@ def build_network(net, src, out, tolerance=None, feed_date=None):
     routes = {r["route_id"]: r for r in feed.rows("routes.txt")}
     short_names = {rid: (r.get("route_short_name") or "").strip() for rid, r in routes.items()}
     trips = read_trips(feed, net["kind"], short_names)
-    services, last_exception = read_calendar(feed)
     freq = read_frequencies(feed)
     stops_raw = {s["stop_id"]: s for s in feed.rows("stops.txt")}
     coords = {sid: (float(s["stop_lat"]), float(s["stop_lon"])) for sid, s in stops_raw.items()
               if s.get("stop_lat") and s.get("stop_lon")}
-    print(f"  {len(routes)} líneas, {len(trips)} viajes, {len(services)} servicios de calendario")
+    # Calendario: qué fechas circula cada viaje, dentro de una ventana que va
+    # de la fecha del feed al último día con servicio.
+    calendar_note = None
+    if crtm:
+        rows = read_calendar_rows(feed)
+        if not rows:
+            sys.exit("ERROR: el GTFS no trae calendar.txt.")
+        holidays = removed_holidays(feed, rows)
+        classes, special, donors = crtm_trip_classes(trips, rows, holidays)
+        calendar = Calendar(feed_date, max(max(r[2] for r in rows.values()), feed_date + timedelta(days=27)))
+        masks = calendar.class_masks(holidays)
+        trip_mask = {}
+        per_class = Counter()
+        for trip_id, found in classes.items():
+            trip_mask[trip_id] = sum(masks[c] for c in found)
+            per_class.update(found)
+        detail_to = None      # el detalle por fechas del CRTM no es fiable: manda el tipo de día
+        calendar_note = ("  viajes por tipo de día: "
+                         + ", ".join(f"{CLASS_NAMES[c]} {per_class[c]}" for c in range(7))
+                         + (f"\n  viajes de horarios especiales descartados (códigos "
+                            f"{', '.join(sorted(special, key=int))}): {sum(special.values())}" if special else "")
+                         + (f"\n  líneas a las que se copia el horario de otro día laborable: {donors}" if donors else ""))
+        n_services = len(rows)
+    else:
+        services, last_exception = read_calendar(feed)
+        all_days = [d for days in services.values() for d in days if d >= feed_date]
+        if not all_days:
+            sys.exit("ERROR: el calendario del GTFS no tiene ningún día de servicio desde la fecha del feed.")
+        calendar = Calendar(feed_date, max(all_days))
+        calendar.masks = {service_id: calendar.mask_of(days) for service_id, days in services.items()}
+        trip_mask = {trip_id: calendar.masks.get(info[2], 0) for trip_id, info in trips.items()}
+        detail_to = last_exception if last_exception and last_exception >= feed_date else None
+        n_services = len(services)
+    print(f"  {len(routes)} líneas, {len(trips)} viajes, {n_services} servicios de calendario")
 
-    # Ventana del calendario: desde la fecha del feed hasta el último día con servicio.
-    # Los servicios que ya habían caducado al publicarse el feed se descartan.
-    all_days = [d for days in services.values() for d in days if d >= feed_date]
-    if not all_days:
-        sys.exit("ERROR: el calendario del GTFS no tiene ningún día de servicio desde la fecha del feed.")
-    calendar = Calendar(services, feed_date, max(all_days))
-    detail_to = last_exception if last_exception and last_exception >= feed_date else None
-    alive = {s for s, mask in calendar.masks.items() if mask}
-
+    # Los viajes que no circulan ningún día de la ventana se descartan.
     print("  leyendo stop_times.txt (tarda un poco) ...")
-    patterns = read_patterns(feed, {t: info for t, info in trips.items() if info[2] in alive})
-    dropped_services, dropped_trips = drop_catch_all_services(patterns, trips, calendar) if crtm else (set(), 0)
-    for key in [k for k, pats in patterns.items() if not any(p.trips for p in pats.values())]:
-        del patterns[key]
-    for pats in patterns.values():
-        for stops in [st for st, p in pats.items() if not p.trips]:
-            del pats[stops]
+    id_starts = {}
+    if crtm:
+        for trip_id, info in trips.items():
+            id_starts[trip_id] = trip_id_parts(trip_id, info[2], info[0])[1]
+    patterns = read_patterns(feed, {t: info for t, info in trips.items() if trip_mask.get(t)}, id_starts)
     estimated, total_trips = resolve_profiles(patterns, coords)
 
     # Recorrido principal de cada línea y sentido: el de más viajes (a igualdad, el más largo)
@@ -1143,7 +1264,7 @@ def build_network(net, src, out, tolerance=None, feed_date=None):
     # Las paradas se referencian por su posición en stops.json y las líneas
     # por su posición en index.json.
     stop_index = {s[0]: i for i, s in enumerate(stops_out)}
-    routing, skipped = build_routing(net, patterns, line_index, stop_index, trips, freq,
+    routing, skipped = build_routing(net, patterns, line_index, stop_index, trips, trip_mask, freq,
                                      calendar, feed_date, detail_to)
     write_json(out / "routing.json", routing)
     n_bands = sum(len(b[1]) // 4 for p in routing["patterns"] for b in p["bands"])
@@ -1175,9 +1296,8 @@ def build_network(net, src, out, tolerance=None, feed_date=None):
     print(f"  geometría: {pts_before} -> {pts_after} puntos (tolerancia {tolerance} m)")
     print(f"  rutas: {len(routing['patterns'])} recorridos, {n_departures} salidas en {n_bands} franjas, "
           f"{len(routing['calendar']['sets'])} calendarios")
-    if dropped_services:
-        print(f"  servicios duplicados «de todos los días» descartados: {len(dropped_services)} "
-              f"({dropped_trips} viajes repetidos)")
+    if calendar_note:
+        print(calendar_note)
     print(f"  viajes sin horas de paso en el GTFS (tiempo estimado): {estimated} de {total_trips}")
     print(f"  festivos detectados: {', '.join(routing['calendar']['holidays']) or 'ninguno'} "
           f"(detalle del calendario hasta {routing['calendar']['detailTo']})")

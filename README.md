@@ -105,9 +105,9 @@ El GTFS de interurbanos ocupa 330 MB descomprimido. La web lo recibe troceado y 
 | --- | --- | --- |
 | HTML, CSS y JavaScript | al abrir | 65 KB |
 | `index.json` de las tres redes (lista de líneas) | al abrir | 21 KB |
-| `stops.json` de cada red visible | en segundo plano, sin bloquear | 101 + 159 + 72 KB |
+| `stops.json` de cada red visible | en segundo plano, sin bloquear | 101 + 162 + 73 KB |
 | `lines/<línea>.json` (recorrido de una línea) | al seleccionarla | 1 a 5 KB por línea |
-| `routing.json` de cada red visible (horarios) | al abrir el modo Ruta | 132 + 233 + 44 KB |
+| `routing.json` de cada red visible (horarios) | al abrir el modo Ruta | 132 + 237 + 46 KB |
 
 La web se puede usar en cuanto llegan los índices (unos 90 KB en total, más Leaflet desde su CDN). Si ocultas una red en «Redes», sus paradas y horarios no se descargan.
 
@@ -120,7 +120,7 @@ Todo el cálculo se hace **en el navegador**, sin servidor.
 Por cada **recorrido** (línea + sentido + secuencia de paradas) se guarda la lista de paradas, el perfil de tiempos entre paradas y, por cada conjunto de fechas, sus **franjas**: primera salida, última salida, número de salidas y duración del recorrido.
 
 - **EMT (red de frecuencia)**. Su `stop_times.txt` ocupa 100 MB (86.635 viajes), pero el GTFS trae en `frequencies.txt` la frecuencia de cada franja. Si pasan autobuses **cada 15 minutos o menos**, se cuenta **medio intervalo** de espera (un autobús urbano no cumple un horario al minuto); si pasan **cada más de 15 minutos** (búhos, líneas especiales), se espera a la **siguiente salida**.
-- **Interurbanos y urbanos del CRTM (redes de horario)**. Son líneas de poca frecuencia: suponer «medio intervalo» en una línea que pasa cada hora daría errores de media hora. Aquí las franjas guardan las **salidas reales sin pérdida**: una franja solo agrupa salidas con exactamente el mismo intervalo y la misma duración, así que de ella se recuperan las horas originales (primera + *k* × intervalo). las 35.000 salidas distintas de los interurbanos caben en 233 KB comprimidos.
+- **Interurbanos y urbanos del CRTM (redes de horario)**. Son líneas de poca frecuencia: suponer «medio intervalo» en una línea que pasa cada hora daría errores de media hora. Aquí las franjas guardan las **salidas reales sin pérdida**: una franja solo agrupa salidas con exactamente el mismo intervalo y la misma duración, así que de ella se recuperan las horas originales (primera + *k* × intervalo). Las 35.000 salidas distintas de los interurbanos caben en 237 KB comprimidos.
 
 ### Calendario: laborables, sábados y festivos
 
@@ -135,7 +135,7 @@ Los de la EMT salen del GTFS. En el del CRTM hay operadores sin horas de paso (u
 
 ### Algoritmo: RAPTOR
 
-[RAPTOR](https://www.microsoft.com/en-us/research/publication/round-based-public-transit-routing/) trabaja por rondas: en la ronda *k* calcula la llegada más temprana a cada parada usando como mucho *k* autobuses. Con las tres redes (12.700 paradas y 2.600 recorridos) una consulta tarda entre 10 y 300 ms.
+[RAPTOR](https://www.microsoft.com/en-us/research/publication/round-based-public-transit-routing/) trabaja por rondas: en la ronda *k* calcula la llegada más temprana a cada parada usando como mucho *k* autobuses. Con las tres redes (12.800 paradas y 2.600 recorridos) una consulta tarda entre 10 y 300 ms.
 
 - **Transbordos a pie** entre paradas a menos de 300 m en línea recta, a 4,5 km/h y con un 25 % de rodeo. Se calculan a partir de las coordenadas, así que los transbordos **entre redes** (de un interurbano a la EMT en un intercambiador) no necesitan nada especial.
 - **Origen y destino**: se consideran todas las paradas a menos de 800 m de cada punto.

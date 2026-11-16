@@ -20,6 +20,11 @@ Cada carpeta de salida contiene:
     lines/<línea>.json  geometría y paradas de cada línea, por sentido
     routing.json        datos del buscador de rutas: recorridos, horarios y calendario
 
+Las líneas cuyo GTFS no trae recorrido se reconstruyen con datos de
+OpenStreetMap (ver scripts/osm_shapes.py): se descargan una vez y quedan en
+data/raw/osm/. Con --no-osm no se usa OpenStreetMap; con --refresh-osm se
+vuelven a descargar.
+
 Solo usa la librería estándar de Python (3.9+), no hay que instalar nada.
 El formato de salida está documentado en el README.
 """
@@ -38,6 +43,8 @@ from collections import Counter, defaultdict
 from datetime import date, timedelta
 from pathlib import Path
 from statistics import median
+
+import osm_shapes
 
 ROOT = Path(__file__).resolve().parent.parent
 RAW = ROOT / "data" / "raw"
@@ -306,7 +313,7 @@ SMALL_WORDS = {"de", "del", "la", "las", "los", "el", "y", "e", "a", "al", "en",
 ACRONYMS = {
     "FFCC", "UPM", "ETSI", "PAU", "IES", "CEIP", "UAM", "URJC", "UNED", "ITV", "RENFE", "AVE",
     "EMT", "CRTM", "INTA", "INEF", "IFEMA", "TVE", "RTVE", "UVA", "CC", "PP", "SS", "RR", "AA",
-    "EEUU", "ONU", "UE", "CEPA", "CP", "PK", "KM", "UFV", "UEM", "CAM", "HM", "IVIMA", "EADS",
+    "EEUU", "ONU", "UE", "CEPA", "CP", "PK", "KM", "UFV", "UEM", "CAM", "HM", "IVIMA", "EADS", "SE",
 }
 ROMAN = re.compile(r"^(?=[IVX]{2,})X{0,3}(IX|IV|V?I{0,3})$")
 # Nombres compuestos que llevan guion (no es un separador «origen-destino»).
@@ -1121,6 +1128,118 @@ def build_routing(net, patterns, line_index, stop_index, trips, trip_mask, freq,
 
 
 # ---------------------------------------------------------------------------
+# Recorridos que no vienen en el GTFS
+# ---------------------------------------------------------------------------
+
+# De mejor a peor: relación de OpenStreetMap, cálculo de ruta por sus calles,
+# líneas rectas entre paradas. La web marca los dos primeros como «recorrido
+# aproximado» y dibuja el tercero discontinuo.
+SHAPE_RANK = {None: 0, "osm": 1, "routed": 2, "straight": 3}
+
+
+class ShapeRebuilder:
+    """Reconstruye con OpenStreetMap los recorridos que le faltan a una red."""
+
+    def __init__(self, net, coords, codes, use_osm=True, refresh=False):
+        self.net = net
+        self.coords = coords
+        self.codes = codes
+        self.overpass = osm_shapes.Overpass(RAW / "osm", refresh=refresh) if use_osm else None
+        self.relations = []
+        self.matcher = None
+        self.roads = {}            # zona -> RoadNetwork | None
+        self.count = Counter()     # método -> nº de sentidos de línea
+        # Una interurbana no puede ser una relación de la EMT con el mismo número (ni al revés)
+        self.exclude = () if net["kind"] == "emt" else ("empresa municipal",)
+        self.notes = []
+
+    def load_relations(self, wanted):
+        """Descarga (o lee de la caché) las relaciones route=bus de las líneas
+        `wanted`: lista de (número de línea, municipio | None)."""
+        if not self.overpass or not wanted or not self.coords:
+            return
+        lats = [c[0] for c in self.coords.values()]
+        lons = [c[1] for c in self.coords.values()]
+        bbox = (min(lats) - 0.02, min(lons) - 0.02, max(lats) + 0.02, max(lons) + 0.02)
+        data = osm_shapes.fetch_relations(self.overpass, self.net["id"], wanted, bbox)
+        if data is None:
+            self.notes.append("no se ha podido consultar OpenStreetMap (Overpass): los recorridos que faltan "
+                              "quedan sin reconstruir; vuelve a ejecutar el script más tarde")
+            return
+        self.relations = osm_shapes.parse_relations(data)
+        self.matcher = osm_shapes.StopMatcher({s: self.coords[s] for s in self.codes}, self.codes)
+
+    def road_network(self, points):
+        """Calles de la zona de unos puntos (se descargan una vez por zona)."""
+        if not self.overpass:
+            return None
+        key = (round(min(p[0] for p in points), 1), round(min(p[1] for p in points), 1),
+               round(max(p[0] for p in points), 1), round(max(p[1] for p in points), 1))
+        if key not in self.roads:
+            self.roads[key] = osm_shapes.fetch_roads(self.overpass, points)
+        return self.roads[key]
+
+    def from_relations(self, line):
+        """Línea sin viajes en el GTFS: trazado y paradas de sus relaciones de
+        OpenStreetMap. Devuelve {sentido: {...}} (vacío si no hay ninguna que cuadre)."""
+        if not self.relations:
+            return {}
+        candidates = osm_shapes.relations_for_line(self.relations, line["name"], line["long"], line["muni"], self.exclude)
+        out = {}
+        for direction, rel in sorted(osm_shapes.split_directions(candidates, line["long"]).items()):
+            stops, fresh, matched = osm_shapes.relation_stops(rel, self.matcher)
+            if len(stops) < 2 or len(rel.path) < 2:
+                continue
+            # La secuencia de paradas tiene que cuadrar con las del GTFS: si casi
+            # ninguna existe en stops.txt, la relación es de otra cosa.
+            if matched < 0.5 * len(stops):
+                self.notes.append(f"línea {line['name']}: la relación {rel.id} de OpenStreetMap no se usa "
+                                  f"(solo {matched} de {len(stops)} paradas están en el GTFS)")
+                continue
+            path = rel.path
+            if rel.gaps:
+                path, solved, left = osm_shapes.fill_gaps(path, rel.gaps, self.road_network(path))
+                self.notes.append(f"línea {line['name']} sentido {direction}: relación {rel.id} con "
+                                  f"{len(rel.gaps)} huecos ({solved} resueltos por la red viaria, {left} en recta)")
+            headsign = rel.tags.get("to") or rel.ends()[1].strip()
+            out[direction] = {"stops": stops, "fresh": fresh, "path": path, "rel": rel.id,
+                              "headsign": nice_name(headsign), "matched": matched}
+            self.count["osm"] += 1
+        return out
+
+    def for_stops(self, line, direction, stops):
+        """Línea con paradas pero sin trazado: (polilínea, método).
+
+        Primero, una relación de OpenStreetMap que pase por sus paradas; si no
+        la hay, cálculo de ruta entre paradas consecutivas; y si tampoco se
+        puede, líneas rectas.
+        """
+        points = [self.coords[s] for s in stops if s in self.coords]
+        if len(points) < 2:
+            return points, "straight"
+        if self.relations:
+            fits = [(osm_shapes.stops_fit(rel.path, points), rel)
+                    for rel in osm_shapes.relations_for_line(self.relations, line["name"], line["long"], line["muni"], self.exclude)]
+            fits = [(fit, rel) for fit, rel in fits if fit >= 0.9
+                    and osm_shapes.meters(rel.path[0], points[0]) < osm_shapes.meters(rel.path[0], points[-1])]
+            if fits:
+                rel = max(fits, key=lambda fr: fr[0])[1]
+                self.count["osm"] += 1
+                return rel.path, "osm"
+        roads = self.road_network(points)
+        if roads:
+            path, routed, straight = osm_shapes.route_between_stops(roads, points)
+            if routed >= 0.8 * (routed + straight):
+                self.count["routed"] += 1
+                if straight:
+                    self.notes.append(f"línea {line['name']} sentido {direction}: {straight} tramos entre paradas "
+                                      f"sin camino por la red viaria, en línea recta")
+                return path, "routed"
+        self.count["straight"] += 1
+        return points, "straight"
+
+
+# ---------------------------------------------------------------------------
 # Una red
 # ---------------------------------------------------------------------------
 
@@ -1147,7 +1266,7 @@ def line_identity(net, route, taken):
     return line_id, name, muni
 
 
-def build_network(net, src, out, tolerance=None, feed_date=None):
+def build_network(net, src, out, tolerance=None, feed_date=None, use_osm=True, refresh_osm=False):
     tolerance = tolerance or net["tolerance"]
     crtm = net["kind"] == "crtm"
     print(f"\n=== {net['name']} ({net['id']}) ===")
@@ -1223,16 +1342,38 @@ def build_network(net, src, out, tolerance=None, feed_date=None):
     for route_id, route in routes.items():
         dirs = [d for d in (0, 1) if (route_id, d) in main]
         line_id, name, muni = line_identity(net, route, taken)
-        if not dirs:
-            # Pasa en el GTFS del CRTM: la línea está en routes.txt pero no trae
-            # viajes, paradas ni trazado. Se lista para que conste, sin datos.
-            where = f" de {muni}" if muni else ""
-            warnings.append(f"línea {name}{where}: el GTFS no trae viajes en vigor; se lista sin recorrido")
         long_name = (route.get("route_long_name") or "").strip(" -")
         lines.append({"route": route_id, "id": line_id, "name": name, "muni": muni,
                       "long": nice_name(long_name) if crtm else long_name, "dirs": dirs})
     lines.sort(key=lambda l: (slugify(l["muni"] or ""), natural_key(l["name"])))
     line_index = {l["route"]: i for i, l in enumerate(lines)}
+
+    # Líneas sin recorrido en el GTFS: las que no traen viajes (ni paradas ni
+    # trazado) y las que traen viajes pero no shape. Se intenta reconstruirlas
+    # con OpenStreetMap.
+    has_shape = lambda pat: bool(pat.shapes) and len(shapes.get(pat.shapes.most_common(1)[0][0], [])) >= 2
+    no_trips = [l for l in lines if not l["dirs"]]
+    no_shape = [l for l in lines if l["dirs"] and not all(has_shape(main[(l["route"], d)]) for d in l["dirs"])]
+    # Códigos de las paradas con las que se pueden casar las de OpenStreetMap (no las estaciones)
+    codes = {sid: (s.get("stop_code") or "").strip() for sid, s in stops_raw.items()
+             if sid in coords and (s.get("location_type") or "0") == "0"}
+    rebuilder = ShapeRebuilder(net, coords, codes, use_osm, refresh_osm)
+    if no_trips or no_shape:
+        print(f"  {len(no_trips)} líneas sin viajes y {len(no_shape)} con viajes pero sin trazado: "
+              + ("consultando OpenStreetMap ..." if use_osm else "no se usa OpenStreetMap (--no-osm)"))
+        rebuilder.load_relations([(l["name"], l["muni"]) for l in no_trips + no_shape])
+    for line in no_trips:
+        line["osm"] = rebuilder.from_relations(line)
+        for found in line["osm"].values():
+            # Paradas que están en OpenStreetMap pero no en el GTFS
+            for stop_id, (stop_name, lat, lon) in found["fresh"].items():
+                stops_raw[stop_id] = {"stop_id": stop_id, "stop_code": "OSM", "stop_name": stop_name}
+                coords[stop_id] = (lat, lon)
+        if not line["osm"]:
+            where = f" de {line['muni']}" if line["muni"] else ""
+            warnings.append(f"línea {line['name']}{where}: el GTFS no trae viajes, paradas ni trazado"
+                            + (" y no hay una relación en OpenStreetMap que cuadre" if use_osm else "")
+                            + "; se lista sin recorrido")
 
     lines_dir = out / "lines"
     if lines_dir.exists():
@@ -1244,13 +1385,32 @@ def build_network(net, src, out, tolerance=None, feed_date=None):
 
     for i, line in enumerate(lines):
         route_id = line["route"]
-        if not line["dirs"]:
-            entry = {"id": line["id"], "name": line["name"], "long": line["long"], "nodata": True}
-            if line["muni"]:
-                entry["muni"] = line["muni"]
-            lines_index.append({**entry, "dirs": []})
-            continue
+        entry = {"id": line["id"], "name": line["name"], "long": line["long"]}
+        if line["muni"]:
+            entry["muni"] = line["muni"]
         dirs = []
+        if not line["dirs"]:
+            if not line.get("osm"):
+                lines_index.append({**entry, "nodata": True, "dirs": []})
+                continue
+            # Sin viajes en el GTFS: recorrido y paradas de OpenStreetMap, sin horarios
+            entry["nosched"] = True
+            for direction, found in sorted(line["osm"].items()):
+                for stop_id in found["stops"]:
+                    stop_lines[stop_id].add(i)
+                simple = simplify(found["path"], tolerance)
+                pts_before += len(found["path"])
+                pts_after += len(simple)
+                dirs.append({
+                    "dir": direction,
+                    "headsign": found["headsign"],
+                    "shape": encode_polyline(simple),
+                    "stops": found["stops"],
+                    "dist": project_stops(simple, [coords[s] for s in found["stops"]]),
+                    "time": None,
+                    "src": "osm",
+                    "rel": found["rel"],       # relación de OpenStreetMap de la que sale
+                })
         for direction in line["dirs"]:
             key = (route_id, direction)
             pats = patterns[key]
@@ -1262,14 +1422,14 @@ def build_network(net, src, out, tolerance=None, feed_date=None):
             pat = main[key]
             stop_points = [coords[s] for s in pat.stops if s in coords]
             shape = shapes.get(pat.shapes.most_common(1)[0][0], []) if pat.shapes else []
+            source = None
             if len(shape) < 2:
-                warnings.append(f"línea {line['name']} sentido {direction}: sin trazado, se unen las paradas")
-                shape = stop_points
+                shape, source = rebuilder.for_stops(line, direction, pat.stops)
             simple = simplify(shape, tolerance)
             pts_before += len(shape)
             pts_after += len(simple)
             dists = pat.dists
-            if dists is None and len(stop_points) == len(pat.stops):
+            if (dists is None or source) and len(stop_points) == len(pat.stops):
                 dists = project_stops(simple, stop_points)
             headsign = pat.headsigns.most_common(1)[0][0] if pat.headsigns else ""
             dirs.append({
@@ -1280,14 +1440,18 @@ def build_network(net, src, out, tolerance=None, feed_date=None):
                 "dist": dists,
                 "time": pat.profile,
             })
-        entry = {"id": line["id"], "name": line["name"], "long": line["long"]}
-        if line["muni"]:
-            entry["muni"] = line["muni"]
+            if source:
+                dirs[-1]["src"] = source
+        # Origen del recorrido de la línea: el peor de sus sentidos
+        worst = max((d.get("src") for d in dirs), key=lambda src: SHAPE_RANK[src])
+        if worst:
+            entry["shape"] = worst
         write_json(lines_dir / f"{file_key(line['id'])}.json", {**entry, "dirs": dirs})
         lines_index.append({
             **entry,
             "dirs": [{"dir": d["dir"], "headsign": d["headsign"], "stops": len(d["stops"])} for d in dirs],
         })
+    warnings += rebuilder.notes
 
     # --- Paradas -----------------------------------------------------------
     stops_out = []
@@ -1341,6 +1505,19 @@ def build_network(net, src, out, tolerance=None, feed_date=None):
     size = sum(f.stat().st_size for f in out.rglob("*.json"))
     kb = lambda name: (out / name).stat().st_size / 1024
     print(f"\nEscrito en {out}:")
+    by_shape = Counter(l.get("shape") for l in lines_index if l.get("shape"))
+    if no_trips or no_shape:
+        labels = {"osm": "con una relación de OpenStreetMap", "routed": "por la red viaria de OpenStreetMap",
+                  "straight": "en línea recta entre paradas"}
+        done = ", ".join(f"{by_shape[k]} {labels[k]}" for k in labels if by_shape[k]) or "ninguno"
+        left = sum(1 for l in lines_index if l.get("nodata"))
+        print(f"  recorridos reconstruidos (líneas): {done}"
+              + (f"; {left} líneas siguen sin datos (no traen paradas y no están en OpenStreetMap)" if left else ""))
+        if rebuilder.overpass and rebuilder.overpass.stale:
+            print("  AVISO: Overpass no ha respondido; se han usado descargas anteriores de OpenStreetMap "
+                  f"({', '.join(rebuilder.overpass.stale)}). Repite con --refresh-osm cuando responda.")
+        if rebuilder.overpass and rebuilder.overpass.downloaded:
+            print(f"  descargas de OpenStreetMap guardadas en {RAW / 'osm'}: {rebuilder.overpass.downloaded}")
     n_nodata = sum(1 for l in lines_index if l.get("nodata"))
     print(f"  {len(lines_index) - n_nodata} líneas ({n_variants} variantes de recorrido además de las principales)"
           + (f" y {n_nodata} más sin datos en el GTFS" if n_nodata else "")
@@ -1382,6 +1559,10 @@ def main():
                     help="tolerancia de simplificación de la geometría, en metros")
     ap.add_argument("--date", help="fecha de actualización del GTFS (AAAA-MM-DD; solo con una red); "
                                    "si no se indica se usa la de los ficheros del ZIP")
+    ap.add_argument("--no-osm", action="store_true",
+                    help="no reconstruir con OpenStreetMap los recorridos que faltan en el GTFS")
+    ap.add_argument("--refresh-osm", action="store_true",
+                    help="volver a descargar los datos de OpenStreetMap aunque estén en data/raw/osm/")
     args = ap.parse_args()
 
     chosen = args.networks or list(NETWORKS)
@@ -1403,7 +1584,7 @@ def main():
             continue
         out = Path(args.output) if args.output else ROOT / "data" / net["out"]
         feed_date = date.fromisoformat(args.date) if args.date else None
-        build_network(net, src, out, args.tolerance, feed_date)
+        build_network(net, src, out, args.tolerance, feed_date, not args.no_osm, args.refresh_osm)
         done += 1
     if not done:
         sys.exit("ERROR: no hay ningún GTFS en data/raw/. Mira el README.")

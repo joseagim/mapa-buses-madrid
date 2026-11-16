@@ -280,6 +280,7 @@ function clearLines() {
 
 /** Hay que llamarla siempre que cambie la lista de líneas seleccionadas. */
 async function selectionChanged({ reveal = null, fitAll = false } = {}) {
+  renderNets();
   renderSelected();
   renderLineList();
   renderSummary();
@@ -396,13 +397,15 @@ function drawRoutes() {
       ys[i] = p.y;
     }
     const latlngs = offsetPath(xs, ys, offsets).map(([x, y]) => map.unproject([x, y], zoom));
+    // Sin recorrido conocido (paradas unidas en línea recta): trazo discontinuo
+    const dashArray = item.dir.src === 'straight' ? `${weight * 1.6} ${weight * 2.2}` : null;
     L.polyline(latlngs, {
       renderer: casingRenderer, pane: 'casing', interactive: false,
-      color: '#fff', weight: weight + 2.5, opacity: 0.9, lineJoin: 'round',
+      color: '#fff', weight: weight + 2.5, opacity: dashArray ? 0.6 : 0.9, lineJoin: 'round',
     }).addTo(casingGroup);
     L.polyline(latlngs, {
       renderer: routeRenderer, pane: 'routes', interactive: false,
-      color: item.sel.color, weight, opacity: 1, lineJoin: 'round',
+      color: item.sel.color, weight, opacity: 1, lineJoin: 'round', dashArray, lineCap: dashArray ? 'butt' : 'round',
     }).addTo(routeGroup);
   });
 }
@@ -528,7 +531,27 @@ function lineMinis(stop, max = 16) {
   return out;
 }
 
-const lineTitle = (line) => `${NET_BY_ID.get(line.net).name} · ${line.label} · ${line.long}`;
+// Recorridos que no vienen en el GTFS (campo `shape` de la línea y `src` de
+// cada sentido en su fichero): 'osm' sale de una relación de OpenStreetMap,
+// 'routed' de un cálculo de ruta por sus calles y 'straight' une las paradas
+// en línea recta (se dibuja discontinuo).
+const SHAPE_NOTE = {
+  osm: 'Recorrido aproximado, reconstruido con OpenStreetMap',
+  routed: 'Recorrido aproximado, calculado por las calles de OpenStreetMap',
+  straight: 'Recorrido desconocido: paradas unidas en línea recta',
+};
+const isApprox = (line) => line.shape === 'osm' || line.shape === 'routed';
+
+/** Aviso de una línea: recorrido aproximado y/o sin horarios (null si no hay nada que avisar). */
+function lineNote(line) {
+  const parts = [];
+  if (line.shape) parts.push(SHAPE_NOTE[line.shape]);
+  if (line.nosched) parts.push('sin horarios en el GTFS: no entra en las rutas');
+  return parts.length ? parts.join(' · ') : null;
+}
+
+const lineTitle = (line) => `${NET_BY_ID.get(line.net).name} · ${line.label} · ${line.long}`
+  + (lineNote(line) ? ` · ${lineNote(line)}` : '');
 
 /** Pone un chip de línea al día (seleccionada o no) sin sustituirlo por otro. */
 function updateChip(chip, line) {
@@ -680,15 +703,28 @@ function renderStopResults() {
 
 function renderNets() {
   const box = $('#nets');
-  box.replaceChildren(h('span', { class: 'nets-title', text: 'Redes' }));
+  const row = h('div', { class: 'nets-row' }, h('span', { class: 'nets-title', text: 'Redes' }));
   for (const net of NETWORKS) {
     const on = state.nets.has(net.id);
-    box.append(h('button', {
+    row.append(h('button', {
       type: 'button', class: `net-toggle net-${net.id}${on ? ' on' : ''}`, 'aria-pressed': String(on),
       title: `${net.name}: ${on ? 'visible en el mapa y en las rutas (pulsa para ocultarla)' : 'oculta (pulsa para mostrarla)'}`,
       onclick: () => setNetEnabled(net.id, !on),
     }, h('i', { 'aria-hidden': 'true' }), net.short));
   }
+  box.replaceChildren(row);
+  // Leyenda de los recorridos que no vienen en el GTFS, si hay alguno pintado
+  const drawn = shownSelection().map((sel) => data.lineById.get(sel.id));
+  const legend = [];
+  if (drawn.some(isApprox)) {
+    legend.push(h('span', { title: 'Líneas cuyo GTFS no trae recorrido: se ha reconstruido con datos de OpenStreetMap' },
+      h('i', { class: 'line-sample', 'aria-hidden': 'true' }), '≈ recorrido aproximado'));
+  }
+  if (drawn.some((line) => line.shape === 'straight')) {
+    legend.push(h('span', { title: 'Sin recorrido conocido: las paradas se unen en línea recta' },
+      h('i', { class: 'line-sample dashed', 'aria-hidden': 'true' }), 'en línea recta'));
+  }
+  if (legend.length) box.append(h('div', { class: 'nets-legend' }, legend));
 }
 
 // ---------------------------------------------------------------------------
@@ -751,6 +787,7 @@ function lineRow(line) {
     },
     badge(line, sel?.color),
     h('span', { class: 'line-long', text: line.long }),
+    line.shape ? h('span', { class: `approx${line.shape === 'straight' ? ' straight' : ''}`, text: line.shape === 'straight' ? 'recto' : '≈ aprox.' }) : null,
     h('span', { class: 'check', 'aria-hidden': 'true', text: sel ? '✓' : '+' }),
     ),
   );
@@ -836,6 +873,9 @@ function renderSelected() {
         hidden
           ? h('div', { class: 'selected-note', text: `Red oculta: actívala en «Redes» para verla.` })
           : directionSelect(sel, line),
+        !hidden && lineNote(line) ? h('div', { class: 'selected-note approx-note' },
+          h('i', { class: `line-sample${line.shape === 'straight' ? ' dashed' : ''}`, style: `color:${sel.color}`, 'aria-hidden': 'true' }),
+          lineNote(line)) : null,
       ),
       h('button', {
         type: 'button', class: 'icon', title: 'Centrar el mapa en la línea',

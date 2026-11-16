@@ -38,6 +38,7 @@ El panel tiene tres modos, **Líneas**, **Ruta** y **Cerca**, y sobre el mapa ha
 - **Mapa a pantalla completa** (Leaflet + OpenStreetMap, sin API keys).
 - **Lista de líneas agrupada por red**, con filtros (Todas / EMT / Interurbanos / Urbanos) y buscador por número, nombre **o municipio** (`27`, `625`, `Circular`, `Móstoles`…). Selección múltiple y un color por línea que puedes cambiar.
 - Cada línea se dibuja **por sus calles reales**, con sus paradas. Puedes ver la ida, la vuelta o ambas.
+- Las líneas cuyo GTFS no trae recorrido se **reconstruyen con OpenStreetMap** y se marcan como «≈ recorrido aproximado» (en la lista, en la línea seleccionada y en la leyenda del mapa). Si de una línea solo se conocieran las paradas, se unirían en línea recta y se dibujaría **discontinua**.
 - Si varias líneas comparten calle **se dibujan en paralelo**, como en un plano de metro, en vez de taparse.
 - **Paradas**: aparecen al acercar el zoom. Al pulsar una ves su nombre, su código y las líneas que pasan, agrupadas por red, con botones para pintarlas o para usarla como origen o destino de una ruta. Los interurbanos que paran en un poste de la EMT aparecen en la misma parada.
 - **Transbordos**: con dos o más líneas seleccionadas (de la misma red o de redes distintas) se resaltan las paradas compartidas y las parejas de paradas de líneas distintas a menos de 250 m.
@@ -195,6 +196,44 @@ Opciones (`python scripts/build_data.py --help`):
 | `--output CARPETA` | Escribir en otra carpeta (solo con una red) |
 | `--tolerance METROS` | Simplificación de la geometría (por defecto 2 m en la EMT, 4 m en interurbanos y 3 m en urbanos) |
 | `--date AAAA-MM-DD` | Fecha de actualización del GTFS (por defecto, la de los ficheros del ZIP) |
+| `--no-osm` | No reconstruir con OpenStreetMap los recorridos que faltan |
+| `--refresh-osm` | Volver a descargar los datos de OpenStreetMap aunque estén en `data/raw/osm/` |
+
+### Recorridos que no trae el GTFS (reconstruidos con OpenStreetMap)
+
+En el GTFS actual **todas las líneas que traen viajes traen también su trazado**. Las que no tienen recorrido son 18 líneas que están en `routes.txt` pero vienen **sin viajes, sin paradas y sin trazado**:
+
+| Red | Líneas sin recorrido en el GTFS | Reconstruidas | Siguen sin datos |
+| --- | --- | --- | --- |
+| EMT | 1: SE721 (servicio especial) | 0 | SE721 |
+| Interurbanos | 12: 635, 720 a 728, N702 y N908 (casi todas del corredor de Colmenar Viejo) | 9: 635 y 720 a 727 | 728, N702, N908 |
+| Urbanos | 5: Colmenar Viejo 1 y 2, Getafe 3A, Valdemoro SE, Algete I1 | 3: Colmenar Viejo 1 y 2 y Valdemoro SE | Getafe 3A, Algete I1 |
+
+`scripts/build_data.py` las reconstruye (el código está en `scripts/osm_shapes.py`) probando, por este orden:
+
+1. **Una relación `route=bus` de OpenStreetMap** que sea de esa línea: mismo número y, además, el municipio (urbanas) o algún topónimo del nombre de la línea (interurbanas). Se comprueba que **sus paradas cuadran con las del CRTM**: cada parada de la relación se busca en `stops.txt` por código o por cercanía (50 m) y la relación se descarta si menos de la mitad existen. De la relación salen el trazado (sus tramos encadenados; las glorietas, solo de la entrada a la salida) y las paradas. Así se han reconstruido las 12 líneas de la tabla.
+2. **Cálculo de ruta por la red viaria de OpenStreetMap** entre cada par de paradas consecutivas, en local, respetando los sentidos de circulación (y los carriles bus a contramano). Es lo que se usaría para una línea que trajera paradas pero no trazado, y para rellenar huecos de una relación incompleta. Hoy no hace falta para ninguna línea; `python tests/osm_shapes.test.py` lo prueba con líneas que sí tienen trazado, comparando el resultado con el oficial: en Las Rozas 1, Tres Cantos 1 y Móstoles 2 el recorrido calculado queda a 2-3 m de mediana del oficial (4-6 m en el percentil 90).
+3. **Líneas rectas** entre paradas, si no hay camino por la red viaria.
+
+![Líneas 1 y 2 de Colmenar Viejo reconstruidas con OpenStreetMap y marcadas como recorrido aproximado](docs/captura-aproximado.jpg)
+
+Los métodos 2 y 3 necesitan conocer las paradas de la línea, y las 6 que siguen «sin datos» no las traen ni están en OpenStreetMap: no hay con qué reconstruirlas.
+
+Las líneas reconstruidas a partir de una relación **no tienen horarios** (el GTFS no los trae): se pueden pintar y aparecen en sus paradas, pero no entran en el cálculo de rutas.
+
+**Cómo se regeneran.** Los datos de OpenStreetMap se piden a la API [Overpass](https://overpass-api.de) (una consulta por red para las relaciones y, si hiciera falta calcular rutas, una por zona para las calles) y se guardan en `data/raw/osm/`, que no se sube al repositorio. Mientras esa caché exista, el script no descarga nada:
+
+```bash
+python scripts/build_data.py --refresh-osm
+```
+
+vuelve a descargarlos (por ejemplo, si alguien ha corregido una relación en OpenStreetMap), y
+
+```bash
+python scripts/build_data.py --no-osm
+```
+
+genera los datos sin usar OpenStreetMap (esas líneas quedan «sin datos»). Si Overpass no responde, el script avisa y sigue: basta con ejecutarlo de nuevo más tarde.
 
 ### Formato de los datos generados
 
@@ -206,9 +245,9 @@ data/<red>/
 └── routing.json         horarios (se carga al abrir el modo Ruta)
 ```
 
-- **`index.json`** → `feed.date` (fecha del GTFS) y `lines`: `id` (identificador único), `name` (número), `muni` (municipio, en las urbanas), `long` (nombre largo) y, por sentido, cabecera y número de paradas. Las líneas que el GTFS trae sin viajes llevan `nodata: true`.
+- **`index.json`** → `feed.date` (fecha del GTFS) y `lines`: `id` (identificador único), `name` (número), `muni` (municipio, en las urbanas), `long` (nombre largo) y, por sentido, cabecera y número de paradas. Si el recorrido no sale del GTFS, `shape` dice de dónde (`osm`, `routed` o `straight`); `nosched: true` indica que la línea no tiene horarios, y `nodata: true`, que no se sabe nada de ella.
 - **`stops.json`** → cada parada es `[id, código, nombre, lat, lon, [líneas]]`, con las líneas como posiciones en `index.json`.
-- **`lines/<línea>.json`** → por cada sentido (`dir` 0 = ida, 1 = vuelta), su recorrido principal: `shape` (geometría simplificada, en formato [*encoded polyline*](https://developers.google.com/maps/documentation/utilities/polylinealgorithm) de precisión 5), `stops` (paradas en orden), `dist` (metros acumulados) y `time` (segundos acumulados). El nombre del fichero sale del identificador: `27.json`, `625.json`, `colmenar-viejo_1.json`.
+- **`lines/<línea>.json`** → por cada sentido (`dir` 0 = ida, 1 = vuelta), su recorrido principal: `shape` (geometría simplificada, en formato [*encoded polyline*](https://developers.google.com/maps/documentation/utilities/polylinealgorithm) de precisión 5), `stops` (paradas en orden), `dist` (metros acumulados) y `time` (segundos acumulados). En los sentidos reconstruidos, `src` (`osm`, `routed` o `straight`) y, si procede, `rel` (la relación de OpenStreetMap de la que salen). El nombre del fichero sale del identificador: `27.json`, `625.json`, `colmenar-viejo_1.json`.
 - **`routing.json`** (versión 2) →
   - `exact`: `true` si las franjas son horario real (CRTM), `false` si son frecuencias (EMT);
   - `calendar`: `start` y `days` (ventana de fechas), `sets` (conjuntos de fechas en hexadecimal: el carácter *k* lleva los días 4*k* a 4*k*+3), `week` (días de la semana habituales de cada conjunto, para fechas fuera de la ventana), `holidays` y `detailTo` (hasta qué fecha detalla festivos el GTFS);
@@ -245,11 +284,13 @@ js/geo.js              utilidades (polilíneas, distancias, rejilla de cercanía
 js/dom.js              utilidades de interfaz
 js/config.js           configuración (redes y sus colores, zooms, parámetros de rutas)
 scripts/build_data.py  preprocesado de los GTFS de las tres redes
+scripts/osm_shapes.py  reconstrucción con OpenStreetMap de los recorridos que faltan
 tests/router.test.mjs  prueba del buscador de rutas con trayectos reales
+tests/osm_shapes.test.py  prueba del cálculo de recorridos por la red viaria
 data/emt/              datos procesados de la EMT (sí se suben al repo)
 data/inter/            datos procesados de los interurbanos del CRTM
 data/urb/              datos procesados de los urbanos de otros municipios
-data/raw/              GTFS originales (no se suben)
+data/raw/              GTFS originales y caché de OpenStreetMap (no se suben)
 ```
 
 Es JavaScript sin dependencias ni *bundler* (módulos ES). Leaflet se carga desde un CDN.
@@ -262,7 +303,7 @@ Cada recorrido se desplaza unos píxeles hacia la **derecha de su sentido de mar
 
 De los datos del CRTM:
 
-- El GTFS del CRTM (versión del 28/10/2026) **trae algunas líneas sin viajes, paradas ni trazado**: las interurbanas 720 a 728, N702, N908 y 635 y las urbanas 1 y 2 de Colmenar Viejo, 3A de Getafe, SE de Valdemoro e I1 de Algete. La web las lista como «sin datos» y no las puede pintar ni usar en las rutas; por eso, por ejemplo, de Colmenar Viejo a Plaza de Castilla solo sale un rodeo por la línea 610. Se arreglará solo cuando el CRTM publique esos viajes y se regeneren los datos.
+- El GTFS del CRTM (versión del 28/10/2026) **trae 17 líneas sin viajes, paradas ni trazado** (y el de la EMT, una). Doce se han reconstruido con OpenStreetMap (ver «Recorridos que no trae el GTFS»): su recorrido es **aproximado**, sus paradas son las que figuran en OpenStreetMap (pueden faltar algunas o estar desactualizadas) y **no tienen horarios**, así que no entran en las rutas. Por eso de Colmenar Viejo a Plaza de Castilla sigue saliendo solo un rodeo por la línea 610, aunque la 721 ya se pueda ver en el mapa. Las otras seis (728, N702, N908, Getafe 3A, Algete I1 y la SE721 de la EMT) se listan como «sin datos». Se arreglará del todo cuando el CRTM publique esos viajes y se regeneren los datos.
 - El calendario del CRTM se **reconstruye** por tipo de día (ver arriba): no recoge fiestas locales ni horarios especiales (verano, vísperas…), que el GTFS marca con códigos que no explica y que se descartan.
 - Parte de los **tiempos de recorrido** del CRTM son estimaciones (el GTFS no los trae, o trae valores imposibles); la web lo indica en el tramo afectado.
 - De cada línea se dibuja el **recorrido principal** de cada sentido. Los interurbanos tienen muchas variantes (1.270 además de las principales): se usan todas al calcular rutas, pero un tramo que va por una variante se dibuja siguiendo el recorrido principal donde coinciden y en línea recta donde no.
@@ -290,6 +331,7 @@ Del mapa de líneas:
 - **EMT**: [Powered by EMT de Madrid](https://www.emtmadrid.es). Datos procesados a partir del GTFS oficial de la Empresa Municipal de Transportes de Madrid (versión del 13/11/2026), publicados en el portal de datos abiertos del Ayuntamiento de Madrid y sujetos a sus [condiciones de uso](https://mobilitylabs.emtmadrid.es/sip/terms-of-use).
 - **Interurbanos y urbanos de otros municipios**: [Powered by CRTM](https://www.crtm.es). Datos procesados a partir del GTFS oficial del Consorcio Regional de Transportes de Madrid (ficheros del 05/11/2026, versión del feed 28/10/2026), bajo su [licencia de uso](https://www.crtm.es/licencia-de-uso/).
 - El procesado (simplificación de geometrías, índice de paradas, compresión de horarios, reconstrucción del calendario, estimación de tiempos) y las rutas calculadas son de este proyecto, y cualquier error que haya introducido también.
+- **Recorridos reconstruidos**: los de las líneas marcadas como «recorrido aproximado» derivan de datos de © [colaboradores de OpenStreetMap](https://www.openstreetmap.org/copyright) (relaciones `route=bus` y red viaria), bajo licencia [ODbL](https://opendatacommons.org/licenses/odbl/).
 - **Mapa base**: © [colaboradores de OpenStreetMap](https://www.openstreetmap.org/copyright).
 - **Búsqueda de direcciones**: [Photon](https://photon.komoot.io), de komoot, con datos © colaboradores de OpenStreetMap ([ODbL](https://opendatacommons.org/licenses/odbl/)). De respaldo, [CartoCiudad](https://www.cartociudad.es) © Instituto Geográfico Nacional ([CC BY 4.0](https://creativecommons.org/licenses/by/4.0/deed.es), scne.es).
 - **Librería de mapas**: [Leaflet](https://leafletjs.com).
@@ -304,6 +346,7 @@ El **código** se publica bajo licencia [MIT](LICENSE). Los **datos** no:
 | --- | --- | --- |
 | `data/inter/` y `data/urb/` | GTFS del CRTM | La [licencia de uso del CRTM](https://www.crtm.es/licencia-de-uso/), que exige citar la fuente y **compartir los datos derivados bajo el mismo tipo de licencia**: estos ficheros procesados se distribuyen bajo esa misma licencia, no bajo la MIT. |
 | `data/emt/` | GTFS de la EMT | Las [condiciones de uso de la EMT](https://mobilitylabs.emtmadrid.es/sip/terms-of-use). |
+| Recorridos reconstruidos (ficheros de `lines/` con `"src": "osm"` o `"routed"`, y las paradas con código `OSM`) | OpenStreetMap | La [Open Database License (ODbL)](https://opendatacommons.org/licenses/odbl/): hay que citar a «© colaboradores de OpenStreetMap» y, si se redistribuyen o se mejoran, hacerlo bajo la misma licencia. Cada sentido reconstruido lleva en `rel` la relación de OpenStreetMap de la que procede. |
 
 Si reutilizas el repositorio, puedes usar el código con las condiciones de la MIT, pero para los datos tienes que respetar la licencia de cada fuente (o regenerarlos tú con el script a partir de los GTFS oficiales).
 

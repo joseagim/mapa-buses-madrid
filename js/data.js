@@ -76,7 +76,9 @@ export function addIndex(store, netId, index) {
       ...raw,
       net: netId,
       muni: raw.muni || null,
-      nodata: Boolean(raw.nodata),
+      nodata: Boolean(raw.nodata),   // el GTFS no trae nada de la línea y no se ha podido reconstruir
+      nosched: Boolean(raw.nosched), // sin viajes en el GTFS: se dibuja (con OpenStreetMap), pero no tiene horarios
+      shape: raw.shape || null,      // origen del recorrido si no es el GTFS: 'osm' | 'routed' | 'straight'
       label,
       nameNorm: normalizeText(raw.name),
       search: normalizeText([raw.name, raw.muni || '', raw.long, ...raw.dirs.map((d) => d.headsign), net.def.name, net.def.short].join(' ')),

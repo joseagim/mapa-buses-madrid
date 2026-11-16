@@ -72,6 +72,22 @@ paso sin marcar. Este fichero se borra antes del push.
   Las Rozas → Moncloa), líneas 1 y 2 de Colmenar frente a las de la EMT, y
   repaso de lo de la v0.2. Peso de la carga inicial.
 
+## D. Recorridos que no trae el GTFS (añadido el 16/11/2026, forma parte de la v0.3)
+
+Diagnóstico: ninguna línea con viajes carece de trazado. Las 18 líneas sin
+recorrido (EMT SE721; interurbanas 635, 720-728, N702, N908; urbanas Colmenar
+Viejo 1 y 2, Getafe 3A, Valdemoro SE, Algete I1) no traen NI viajes NI paradas.
+
+- [x] **D1.** `scripts/osm_shapes.py` + integración en `build_data.py`:
+  relaciones route=bus de OpenStreetMap (trazado y paradas) para las líneas sin
+  viajes; para líneas con paradas y sin shape, relación que pase por sus
+  paradas → cálculo de ruta por la red viaria → rectas. Caché en `data/raw/osm/`.
+- [x] **D2.** Web: «recorrido aproximado» en el panel y en la leyenda; rectas
+  en discontinuo; crédito ODbL.
+- [x] **D3.** Revisar con capturas (Colmenar Viejo 1 y 2, y dos más) y probar
+  el cálculo de ruta con `python tests/osm_shapes.test.py`.
+- [x] **D4.** README: ODbL y cómo se regeneran.
+
 ## Cierre (cuando el usuario dé el visto bueno)
 
 - [ ] Repasar el README, borrar este fichero, push a `main` y tag `v0.3`.
